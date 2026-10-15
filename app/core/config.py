@@ -20,12 +20,15 @@ class Settings(BaseSettings):
         "https://*.vercel.app",
     ]
 
-    # Ngưỡng lâm sàng sàng lọc mi mắt (Đông Á / Dân số học)
+    # Ngưỡng phân tầng sàng lọc mi mắt (Đông Á / Dân số học - Asymmetry-First)
+    CRITICAL_SEVERE_MRD1_MM: float = 1.5
     ABSOLUTE_SEVERE_MRD1_MM: float = 2.0
+    HIGH_SYMMETRY_DELTA_MAX_MM: float = 0.5
+    SYMMETRIC_MIN_MRD1_MM: float = 2.0
     TIER_A_MIN_MRD1_MM: float = 2.5
     TIER_B_MIN_MRD1_MM: float = 2.0
     PHYSIOLOGICAL_ASYMMETRY_MAX_MM: float = 1.0
-    BORDERLINE_ASYMMETRY_MAX_MM: float = 1.5
+    BORDERLINE_ASYMMETRY_MAX_MM: float = 2.0
     BROW_ASYMMETRY_THRESHOLD_PX: float = 8.0
 
     # Ngưỡng cổng chất lượng tư thế và hình ảnh
@@ -61,6 +64,30 @@ class Settings(BaseSettings):
     # Ngưỡng độ tin cậy đo lường (Module M6)
     CONFIDENCE_VALID_THRESHOLD: float = 0.70
     CONFIDENCE_LOW_THRESHOLD: float = 0.50
+
+    # Ngưỡng phát hiện phản quang giác mạc nâng cao từ V2 (Module M4)
+    REFLEX_MAX_ASPECT_RATIO: float = 2.8  # TODO_PILOT: Giới hạn tỷ lệ dài/rộng vệt lóa
+    REFLEX_MAX_AREA_PX: int = 60  # TODO_PILOT: Diện tích tuyệt đối tối đa đốm phản quang
+    REFLEX_MAX_AREA_IRIS_RATIO: float = 0.05  # Diện tích tương đối tối đa so với pi * R_iris^2
+    REFLEX_CLUSTER_DISTANCE_PX: float = 8.0  # Khoảng cách tối thiểu giữa 2 ứng viên cạnh tranh
+    REFLEX_CLUSTER_DISTANCE_IRIS_RATIO: float = 0.20  # Hệ số khoảng cách cụm theo R_iris
+    REFLEX_CLUSTER_SCORE_GAP: float = 3.0  # Độ chênh điểm số tối đa xác định cụm cạnh tranh
+
+    # Ngưỡng định vị đồng tử độc lập (Module M4.5 - pupil_service)
+    PUPIL_SEARCH_RADIUS_FACTOR: float = 0.85  # Bán kính tìm kiếm đồng tử trong mống mắt
+    PUPIL_MIN_CONTRAST_DIFF: float = 12.0  # Độ tương phản tối thiểu (P85 - P15) trong ROI
+    PUPIL_MIN_RADIUS_RATIO: float = 0.15  # Bán kính đồng tử tối thiểu / R_iris
+    PUPIL_MAX_RADIUS_RATIO: float = 0.75  # Bán kính đồng tử tối đa / R_iris
+    PUPIL_MAX_OFFSET_FROM_IRIS: float = 0.25  # Độ lệch tâm tối đa cho phép / Đường kính mống mắt
+    PUPIL_MIN_CIRCULARITY: float = 0.35  # Độ tròn tối thiểu (4 * pi * Area / Perimeter^2)
+    PUPIL_FALLBACK_CONFIDENCE: float = 0.75  # Điểm tin cậy khi dự phòng sang đồng tử đo được
+    IRIS_CENTER_FALLBACK_CONFIDENCE: float = 0.60  # Điểm tin cậy khi dự phòng sang tâm mống mắt MediaPipe
+
+    # Ngưỡng kiểm tra tính toàn vẹn hình thái học mống mắt hai bên
+    IRIS_MAX_BILATERAL_DIFF_RATIO: float = 0.15  # Công thức V2: chênh lệch tối đa 15% theo mẫu số max(OD, OS)
+
+    # Ngưỡng an toàn biên khung hình (Module M2 - Quality Gate)
+    OCULAR_EDGE_MARGIN_PX: int = 2  # Khoảng cách an toàn tối thiểu từ mốc mắt đến mép ảnh
 
     model_config = SettingsConfigDict(
         env_file=".env",

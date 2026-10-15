@@ -56,6 +56,10 @@ class SingleEyeMeasurement(BaseModel):
     status: str = "VALID"
     confidence_score: float = 1.0
     warning_flags: List[str] = Field(default_factory=list)
+    # Các trường mở rộng từ V2 (Optional - tương thích ngược G5)
+    glint_aspect_ratio: Optional[float] = None
+    pupil_diameter_px: Optional[float] = None
+    fallback_type: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
 

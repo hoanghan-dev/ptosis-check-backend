@@ -180,8 +180,9 @@ def test_mrd1_negative_sign_convention():
         (44.0, 44.0, "PHYSIOLOGICAL_SYMMETRY", 0.0),      # Cân bằng hoàn hảo
         (44.0, 48.0, "PHYSIOLOGICAL_SYMMETRY", 1.0),      # Chênh 1.0 mm (ngưỡng sinh lý)
         (44.0, 49.0, "BORDERLINE_ASYMMETRY", 1.25),       # Chênh 1.25 mm (ranh giới)
-        (44.0, 50.0, "BORDERLINE_ASYMMETRY", 1.5),        # Chênh 1.50 mm (ngưỡng ranh giới)
-        (44.0, 52.0, "SIGNIFICANT_ASYMMETRY", 2.0),       # Chênh 2.0 mm (rõ rệt)
+        (44.0, 50.0, "BORDERLINE_ASYMMETRY", 1.5),        # Chênh 1.50 mm (ranh giới)
+        (44.0, 52.0, "BORDERLINE_ASYMMETRY", 2.0),        # Chênh 2.0 mm (ngưỡng ranh giới)
+        (44.0, 53.0, "SIGNIFICANT_ASYMMETRY", 2.25),      # Chênh 2.25 mm (> 2.0 mm: rõ rệt)
     ],
 )
 def test_asymmetry_classification_thresholds(

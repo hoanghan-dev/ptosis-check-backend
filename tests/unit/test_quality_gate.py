@@ -312,3 +312,169 @@ def test_zero_disk_write_during_screening():
 
     files_after = set(backend_path.rglob("*.jpg")) | set(backend_path.rglob("*.png"))
     assert files_before == files_after, "Phát hiện tệp ảnh mới được ghi ra đĩa trong quá trình xử lý!"
+
+
+# ==============================================================================
+# Phase 4: Kiểm tra chạm mép khung hình & từ chối vệt lóa / cụm sáng (HTTP 422)
+# ==============================================================================
+
+def test_ocular_region_touches_image_edge():
+    """Kiểm tra từ chối OCULAR_REGION_TOUCHES_IMAGE_EDGE khi mốc mắt sát viền ảnh (<= 2 px)."""
+    img = get_valid_test_image()
+    h, w = img.shape[:2]
+    img_bytes = encode_image_to_bytes(img)
+
+    with patch("app.services.quality_gate_service._FACE_MESH.process") as mock_process, \
+         patch("app.services.quality_gate_service.estimate_head_pose_3d") as mock_pose:
+
+        mock_pose.return_value = (0.0, 0.0, 0.0)
+        mock_lms = [MagicMock(x=0.5, y=0.5) for _ in range(478)]
+        # Đặt mốc đuôi mắt phải (mốc 33) sát mép trái (x = 1 px)
+        mock_lms[33] = MagicMock(x=1.0 / float(w), y=0.5)
+        mock_process.return_value = MagicMock(
+            multi_face_landmarks=[MagicMock(landmark=mock_lms)]
+        )
+
+        result = evaluate_quality(img)
+        assert not result.passed
+        assert result.rejection_reason == "OCULAR_REGION_TOUCHES_IMAGE_EDGE"
+        assert "sát mép ảnh" in result.rejection_message_vi
+        assert result.audit_details["edge_margin_px"] == 2
+
+    # Kiểm tra qua API endpoint
+    with patch("app.services.quality_gate_service._FACE_MESH.process") as mock_process, \
+         patch("app.services.quality_gate_service.estimate_head_pose_3d") as mock_pose:
+
+        mock_pose.return_value = (0.0, 0.0, 0.0)
+        mock_lms = [MagicMock(x=0.5, y=0.5) for _ in range(478)]
+        mock_lms[33] = MagicMock(x=1.0 / float(w), y=0.5)
+        mock_process.return_value = MagicMock(
+            multi_face_landmarks=[MagicMock(landmark=mock_lms)]
+        )
+
+        response = client.post(
+            "/api/v1/screening/analyze",
+            files={"file": ("test_edge.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code == 422
+        data = response.json()
+        detail = data.get("detail", data)
+        assert detail["rejection_reason"] == "OCULAR_REGION_TOUCHES_IMAGE_EDGE"
+
+
+def test_screening_endpoint_rejects_elongated_glare():
+    """Kiểm tra Endpoint /analyze từ chối HTTP 422 với mã REFLEX_GLARE_ARTIFACT khi mống mắt có vệt lóa dài."""
+    img = get_valid_test_image()
+    img_bytes = encode_image_to_bytes(img)
+
+    from app.services.reflex_service import ReflexDetectionStatus, ReflexResult
+
+    mock_glare_result = ReflexResult(
+        reflex_point=(60.0, 60.0),
+        reference_point_used="PUPIL_CENTER_FALLBACK",
+        confidence_score=0.65,
+        has_fallback=True,
+        status=ReflexDetectionStatus.LARGE_OR_ELONGATED_GLARE,
+        warning_flags=["REFLEX_FALLBACK_TO_PUPIL", "REFLEX_GLARE_ARTIFACT"],
+    )
+
+    with patch("app.api.v1.endpoints.screening.detect_corneal_reflex", return_value=mock_glare_result):
+        response = client.post(
+            "/api/v1/screening/analyze",
+            files={"file": ("test_glare.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code == 422
+        data = response.json()
+        detail = data.get("detail", data)
+        assert detail["rejection_reason"] == "REFLEX_GLARE_ARTIFACT"
+        assert "vệt lóa sáng kéo dài" in detail["rejection_message_vi"]
+
+
+def test_screening_endpoint_rejects_ambiguous_cluster():
+    """Kiểm tra Endpoint /analyze từ chối HTTP 422 với mã REFLEX_AMBIGUOUS_CLUSTER khi có cụm phản quang cạnh tranh."""
+    img = get_valid_test_image()
+    img_bytes = encode_image_to_bytes(img)
+
+    from app.services.reflex_service import ReflexDetectionStatus, ReflexResult
+
+    mock_cluster_result = ReflexResult(
+        reflex_point=(60.0, 60.0),
+        reference_point_used="PUPIL_CENTER_FALLBACK",
+        confidence_score=0.65,
+        has_fallback=True,
+        status=ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES,
+        warning_flags=["REFLEX_FALLBACK_TO_PUPIL", "CLUSTERED_REFLEX_CANDIDATES"],
+    )
+
+    with patch("app.api.v1.endpoints.screening.detect_corneal_reflex", return_value=mock_cluster_result):
+        response = client.post(
+            "/api/v1/screening/analyze",
+            files={"file": ("test_cluster.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code == 422
+        data = response.json()
+        detail = data.get("detail", data)
+        assert detail["rejection_reason"] == "REFLEX_AMBIGUOUS_CLUSTER"
+        assert "cạnh tranh trên giác mạc" in detail["rejection_message_vi"]
+
+
+def test_screening_endpoint_three_tier_fallback():
+    """Kiểm tra chuỗi dự phòng 3 cấp hoạt động chính xác trong endpoint /analyze."""
+    img = get_valid_test_image()
+    img_bytes = encode_image_to_bytes(img)
+
+    from app.services.reflex_service import ReflexDetectionStatus, ReflexResult
+    from app.services.pupil_service import PupilResult
+
+    mock_fallback_reflex = ReflexResult(
+        reflex_point=(60.0, 60.0),
+        reference_point_used="PUPIL_CENTER_FALLBACK",
+        confidence_score=0.65,
+        has_fallback=True,
+        status=ReflexDetectionStatus.NO_REFLEX_FOUND,
+        warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
+    )
+
+    # Cấp 1: pupil_service phát hiện được đồng tử -> PUPIL_DETECTOR
+    mock_detected_pupil = PupilResult(
+        pupil_point=(61.0, 61.5),
+        pupil_diameter_px=22.0,
+        confidence_score=0.75,
+        status="DETECTED",
+        circularity=0.85,
+        offset_from_iris_px=2.0,
+    )
+
+    with patch("app.api.v1.endpoints.screening.detect_corneal_reflex", return_value=mock_fallback_reflex), \
+         patch("app.api.v1.endpoints.screening.detect_pupil_in_iris_roi", return_value=mock_detected_pupil):
+
+        response = client.post(
+            "/api/v1/screening/analyze",
+            files={"file": ("test_fb1.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["measurements"]["right_eye_od"]["fallback_type"] == "PUPIL_DETECTOR"
+        assert data["measurements"]["right_eye_od"]["pupil_diameter_px"] == 22.0
+        assert data["measurements"]["right_eye_od"]["reference_point_used"] == "PUPIL_CENTER_FALLBACK"
+
+    # Cấp 2: pupil_service không tìm thấy đồng tử -> lùi về IRIS_CENTER
+    mock_not_found_pupil = PupilResult(
+        pupil_point=None,
+        pupil_diameter_px=None,
+        confidence_score=0.0,
+        status="PUPIL_NOT_FOUND",
+    )
+
+    with patch("app.api.v1.endpoints.screening.detect_corneal_reflex", return_value=mock_fallback_reflex), \
+         patch("app.api.v1.endpoints.screening.detect_pupil_in_iris_roi", return_value=mock_not_found_pupil):
+
+        response = client.post(
+            "/api/v1/screening/analyze",
+            files={"file": ("test_fb2.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["measurements"]["right_eye_od"]["fallback_type"] == "IRIS_CENTER"
+        assert data["measurements"]["right_eye_od"]["reference_point_used"] == "PUPIL_CENTER_FALLBACK"
+

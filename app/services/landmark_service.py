@@ -135,14 +135,14 @@ def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
     scale_factor_od = assumed_diameter_mm / hvid_od_px
     scale_factor_os = assumed_diameter_mm / hvid_os_px
 
-    # 5. Kiểm tra nhất quán sinh học hai mắt: |HVID_OD - HVID_OS| / HVID_avg < 10%
-    hvid_avg = (hvid_od_px + hvid_os_px) / 2.0
-    hvid_asymmetry_ratio = abs(hvid_od_px - hvid_os_px) / max(hvid_avg, 1e-6)
-    is_hvid_biologically_consistent = hvid_asymmetry_ratio < 0.10
+    # 5. Kiểm tra nhất quán sinh học hai mắt theo công thức V2: |HVID_OD - HVID_OS| / max(OD, OS) <= 15%
+    max_hvid = max(hvid_od_px, hvid_os_px)
+    hvid_asymmetry_ratio = abs(hvid_od_px - hvid_os_px) / max(max_hvid, 1e-6)
+    is_hvid_biologically_consistent = hvid_asymmetry_ratio <= settings.IRIS_MAX_BILATERAL_DIFF_RATIO
 
     warning_flags = []
     if not is_hvid_biologically_consistent:
-        warning_flags.append("HVID_ASYMMETRY_EXCEEDED_10_PERCENT")
+        warning_flags.append("HVID_ASYMMETRY_EXCEEDED")
 
     # Kiểm tra tính khả thi của hệ số quy đổi (thông thường 0.15 - 0.50 mm/px)
     if not (0.10 <= scale_factor_od <= 0.60 and 0.10 <= scale_factor_os <= 0.60):

@@ -369,6 +369,31 @@ def evaluate_quality(image_bgr: np.ndarray) -> QualityGateResult:
             },
         )
 
+    # 3.5. Kiểm tra vùng mắt chạm mép viền ảnh (touches_crop_edge)
+    margin = settings.OCULAR_EDGE_MARGIN_PX
+    ocular_indices = [
+        LANDMARK_RIGHT_EYE_OUTER, LANDMARK_RIGHT_EYE_INNER,
+        LANDMARK_RIGHT_EYE_TOP, LANDMARK_RIGHT_EYE_BOTTOM,
+        LANDMARK_LEFT_EYE_OUTER, LANDMARK_LEFT_EYE_INNER,
+        LANDMARK_LEFT_EYE_TOP, LANDMARK_LEFT_EYE_BOTTOM,
+        LANDMARK_IRIS_CENTER_OD, LANDMARK_IRIS_CENTER_OS,
+    ]
+    touches_edge = False
+    for idx in ocular_indices:
+        x, y = landmarks_px[idx]
+        if x <= margin or x >= (width - margin) or y <= margin or y >= (height - margin):
+            touches_edge = True
+            break
+
+    if touches_edge:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="OCULAR_REGION_TOUCHES_IMAGE_EDGE",
+            rejection_message_vi="Vùng mắt bị sát mép ảnh hoặc mất một phần. Vui lòng căn khuôn mặt vào giữa khung hình và chụp lại.",
+            pose=pose_audit,
+            audit_details={"edge_margin_px": margin},
+        )
+
     # 4. Kiểm tra độ mở của mắt (Palpebral aperture ratio >= 0.15)
     width_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_OUTER] - landmarks_px[LANDMARK_RIGHT_EYE_INNER]))
     height_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_TOP] - landmarks_px[LANDMARK_RIGHT_EYE_BOTTOM]))

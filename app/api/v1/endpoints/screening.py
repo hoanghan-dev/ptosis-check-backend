@@ -28,7 +28,8 @@ from app.schemas.quality import PoseAudit, QualityRejection
 from app.schemas.triage import ScreeningTier, TriageFlags, TriageResult
 from app.services.quality_gate_service import evaluate_quality
 from app.services.landmark_service import detect_landmarks
-from app.services.reflex_service import detect_corneal_reflex
+from app.services.reflex_service import ReflexDetectionStatus, detect_corneal_reflex
+from app.services.pupil_service import detect_pupil_in_iris_roi
 from app.services.eyelid_margin_service import extract_upper_margin
 from app.services.measurement_service import compute_measurements
 from app.services.triage_service import evaluate_triage
@@ -94,6 +95,77 @@ async def analyze_eye_image(
         reflex_od = detect_corneal_reflex(image_gray, landmarks.iris_center_od, r_iris_od)
         reflex_os = detect_corneal_reflex(image_gray, landmarks.iris_center_os, r_iris_os)
 
+        # Chốt chặn Cổng Chất lượng từ chối ảnh khi có vệt lóa dài hoặc cụm đốm sáng (HTTP 422)
+        if (
+            reflex_od.status == ReflexDetectionStatus.LARGE_OR_ELONGATED_GLARE
+            or reflex_os.status == ReflexDetectionStatus.LARGE_OR_ELONGATED_GLARE
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=QualityRejection(
+                    error_code="QUALITY_GATE_REJECTED",
+                    rejection_reason="REFLEX_GLARE_ARTIFACT",
+                    rejection_message_vi="Mống mắt xuất hiện vệt lóa sáng kéo dài từ nguồn sáng xung quanh. Vui lòng tắt đèn trần chiếu thẳng hoặc đổi góc chụp và chụp lại.",
+                ).model_dump(),
+            )
+
+        if (
+            reflex_od.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
+            or reflex_os.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=QualityRejection(
+                    error_code="QUALITY_GATE_REJECTED",
+                    rejection_reason="REFLEX_AMBIGUOUS_CLUSTER",
+                    rejection_message_vi="Xuất hiện nhiều đốm phản xạ ánh sáng cạnh tranh trên giác mạc. Vui lòng tránh chụp dưới nguồn sáng chùm kép hoặc bóng đèn đôi.",
+                ).model_dump(),
+            )
+
+        # Thiết lập Chuỗi Dự phòng 3 Cấp (Three-Tier Fallback Chain)
+        # ---------------------------------------------------------------------
+        # Mắt phải (OD)
+        fallback_type_od = "NONE"
+        glint_aspect_od = reflex_od.glint_aspect_ratio
+        pupil_diam_od = None
+
+        if reflex_od.has_fallback:
+            pupil_res_od = detect_pupil_in_iris_roi(image_bgr, landmarks.iris_center_od, r_iris_od)
+            if pupil_res_od.status == "DETECTED" and pupil_res_od.pupil_point is not None:
+                reflex_od.reflex_point = pupil_res_od.pupil_point
+                reflex_od.confidence_score = settings.PUPIL_FALLBACK_CONFIDENCE
+                reflex_od.reference_point_used = "PUPIL_CENTER_FALLBACK"
+                reflex_od.warning_flags = ["REFLEX_FALLBACK_TO_PUPIL"]
+                fallback_type_od = "PUPIL_DETECTOR"
+                pupil_diam_od = pupil_res_od.pupil_diameter_px
+            else:
+                reflex_od.reflex_point = landmarks.iris_center_od
+                reflex_od.confidence_score = settings.IRIS_CENTER_FALLBACK_CONFIDENCE
+                reflex_od.reference_point_used = "PUPIL_CENTER_FALLBACK"
+                reflex_od.warning_flags = ["REFLEX_FALLBACK_TO_IRIS_CENTER"]
+                fallback_type_od = "IRIS_CENTER"
+
+        # Mắt trái (OS)
+        fallback_type_os = "NONE"
+        glint_aspect_os = reflex_os.glint_aspect_ratio
+        pupil_diam_os = None
+
+        if reflex_os.has_fallback:
+            pupil_res_os = detect_pupil_in_iris_roi(image_bgr, landmarks.iris_center_os, r_iris_os)
+            if pupil_res_os.status == "DETECTED" and pupil_res_os.pupil_point is not None:
+                reflex_os.reflex_point = pupil_res_os.pupil_point
+                reflex_os.confidence_score = settings.PUPIL_FALLBACK_CONFIDENCE
+                reflex_os.reference_point_used = "PUPIL_CENTER_FALLBACK"
+                reflex_os.warning_flags = ["REFLEX_FALLBACK_TO_PUPIL"]
+                fallback_type_os = "PUPIL_DETECTOR"
+                pupil_diam_os = pupil_res_os.pupil_diameter_px
+            else:
+                reflex_os.reflex_point = landmarks.iris_center_os
+                reflex_os.confidence_score = settings.IRIS_CENTER_FALLBACK_CONFIDENCE
+                reflex_os.reference_point_used = "PUPIL_CENTER_FALLBACK"
+                reflex_os.warning_flags = ["REFLEX_FALLBACK_TO_IRIS_CENTER"]
+                fallback_type_os = "IRIS_CENTER"
+
         # 6. Phân đoạn Bờ Sụn mi Trên (Module M5)
         margin_od = extract_upper_margin(
             landmarks_upper=landmarks.upper_eyelid_od,
@@ -115,6 +187,15 @@ async def analyze_eye_image(
             margin_os=margin_os,
             sharpness_score=quality_gate.sharpness_score,
         )
+
+        # Bổ sung các trường hình thái học V2 vào kết quả đo từng mắt
+        measurements_container.right_eye_od.fallback_type = fallback_type_od
+        measurements_container.right_eye_od.glint_aspect_ratio = glint_aspect_od
+        measurements_container.right_eye_od.pupil_diameter_px = pupil_diam_od
+
+        measurements_container.left_eye_os.fallback_type = fallback_type_os
+        measurements_container.left_eye_os.glint_aspect_ratio = glint_aspect_os
+        measurements_container.left_eye_os.pupil_diameter_px = pupil_diam_os
 
         # 8. Phân tầng Nguy cơ Ưu tiên Bất đối xứng (Module M7)
         is_reflex_occluded = (
@@ -164,7 +245,10 @@ async def analyze_eye_image(
             annotated_overlay_coordinates=AnnotatedOverlayContainer(
                 right_eye=EyeAnnotationPoints(
                     corneal_reflex=[reflex_od.reflex_point[0], reflex_od.reflex_point[1]],
-                    pupil_center=[landmarks.iris_center_od[0], landmarks.iris_center_od[1]],
+                    pupil_center=[
+                        reflex_od.reflex_point[0] if fallback_type_od == "PUPIL_DETECTOR" else landmarks.iris_center_od[0],
+                        reflex_od.reflex_point[1] if fallback_type_od == "PUPIL_DETECTOR" else landmarks.iris_center_od[1],
+                    ],
                     iris_limbus_contour=[
                         [landmarks.limbus_horizontal_od[0][0], landmarks.limbus_horizontal_od[0][1]],
                         [landmarks.limbus_horizontal_od[1][0], landmarks.limbus_horizontal_od[1][1]],
@@ -174,7 +258,10 @@ async def analyze_eye_image(
                 ),
                 left_eye=EyeAnnotationPoints(
                     corneal_reflex=[reflex_os.reflex_point[0], reflex_os.reflex_point[1]],
-                    pupil_center=[landmarks.iris_center_os[0], landmarks.iris_center_os[1]],
+                    pupil_center=[
+                        reflex_os.reflex_point[0] if fallback_type_os == "PUPIL_DETECTOR" else landmarks.iris_center_os[0],
+                        reflex_os.reflex_point[1] if fallback_type_os == "PUPIL_DETECTOR" else landmarks.iris_center_os[1],
+                    ],
                     iris_limbus_contour=[
                         [landmarks.limbus_horizontal_os[0][0], landmarks.limbus_horizontal_os[0][1]],
                         [landmarks.limbus_horizontal_os[1][0], landmarks.limbus_horizontal_os[1][1]],
