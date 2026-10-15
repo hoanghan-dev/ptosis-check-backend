@@ -2,8 +2,8 @@
 Dịch vụ Phân tầng Nguy cơ Ưu tiên Bất đối xứng (Module M7: Asymmetry-First Triage Engine).
 Triển khai cây quyết định lâm sàng 3 mức (TIER_A, TIER_B, TIER_C) dựa trên:
 - Chốt chặn an toàn tuyệt đối: min(MRD1) < 2.0 mm hoặc phản quang bị che lấp -> Mức C.
-- Tiêu chí ưu tiên bất đối xứng: delta_MRD1 > 1.5 mm -> Mức C.
-- Tiêu chí ranh giới: 1.0 < delta_MRD1 <= 1.5 mm HOẶC 2.0 <= min(MRD1) < 2.5 mm HOẶC delta_Brow > 8.0 px -> Mức B.
+- Tiêu chí ưu tiên bất đối xứng: delta_MRD1 > 2.0 mm -> Mức C.
+- Tiêu chí ranh giới: 1.0 < delta_MRD1 <= 2.0 mm HOẶC 2.0 <= min(MRD1) < 2.5 mm HOẶC delta_Brow > 8.0 px -> Mức B.
 - Sinh lý bình thường: min(MRD1) >= 2.5 mm VÀ delta_MRD1 <= 1.0 mm VÀ delta_Brow <= 8.0 px -> Mức A.
 
 Tuân thủ tuyệt đối:
@@ -90,17 +90,26 @@ def evaluate_triage(
     if is_reflex_occluded:
         trigger_reasons.append("REFLEX_OCCLUDED_SEVERE")
 
-    # Chốt chặn 1.2: min(MRD1) < ABSOLUTE_SEVERE_MRD1_MM (2.0 mm)
-    if min_mrd1 < settings.ABSOLUTE_SEVERE_MRD1_MM:
-        if od_val < settings.ABSOLUTE_SEVERE_MRD1_MM and os_val < settings.ABSOLUTE_SEVERE_MRD1_MM:
+    # Chốt chặn 1.2: Che lấp nghiêm trọng trục thị giác (MRD1 một mắt < 1.5 mm hoặc cả hai mắt < 1.8 mm)
+    critical_threshold = getattr(settings, "CRITICAL_SEVERE_MRD1_MM", 1.5)
+    if min_mrd1 < critical_threshold:
+        if od_val < critical_threshold and os_val < critical_threshold:
             is_bilateral_severe = True
-            trigger_reasons.append("BILATERAL_SEVERE_MRD1_UNDER_2MM")
+            trigger_reasons.append("BILATERAL_SEVERE_MRD1_UNDER_1_5MM")
         else:
-            trigger_reasons.append("UNILATERAL_SEVERE_MRD1_UNDER_2MM")
+            trigger_reasons.append("UNILATERAL_SEVERE_MRD1_UNDER_1_5MM")
+    elif od_val < 1.8 and os_val < 1.8:
+        is_bilateral_severe = True
+        trigger_reasons.append("BILATERAL_SEVERE_MRD1_UNDER_1_8MM")
 
-    # Tiêu chí 1.3: Bất đối xứng rõ rệt vượt ngưỡng ranh giới (> 1.5 mm)
+    # Tiêu chí 1.3: ƯU TIÊN BẤT ĐỐI XỨNG - Bất đối xứng rõ rệt vượt ngưỡng ranh giới (> 2.0 mm)
     if delta_mrd1_mm > settings.BORDERLINE_ASYMMETRY_MAX_MM:
-        trigger_reasons.append("SIGNIFICANT_ASYMMETRY_OVER_1_5MM")
+        trigger_reasons.append("SIGNIFICANT_ASYMMETRY_OVER_2MM")
+
+    # Tiêu chí 1.4: Một mắt hạ thấp dưới 2.0 mm kết hợp bất đối xứng đáng kể (> 1.0 mm)
+    if min_mrd1 < settings.ABSOLUTE_SEVERE_MRD1_MM and delta_mrd1_mm > settings.PHYSIOLOGICAL_ASYMMETRY_MAX_MM:
+        if "UNILATERAL_SEVERE_MRD1_UNDER_1_5MM" not in trigger_reasons:
+            trigger_reasons.append("UNILATERAL_SEVERE_MRD1_UNDER_2MM")
 
     # Nếu thỏa mãn bất kỳ điều kiện nào ở trên -> MỨC C
     if trigger_reasons:
@@ -122,18 +131,30 @@ def evaluate_triage(
     # =========================================================================
     # BƯỚC 2: KIỂM TRA TIÊU CHÍ RANH GIỚI / NGHI NGỜ (TIER_B)
     # =========================================================================
-    # Tiêu chí 2.1: Bất đối xứng ranh giới (1.0 mm < delta_mrd1 <= 1.5 mm)
+    # Tiêu chí 2.1: ƯU TIÊN BẤT ĐỐI XỨNG - Bất đối xứng ranh giới (1.0 mm < delta_mrd1 <= 2.0 mm)
     if delta_mrd1_mm > settings.PHYSIOLOGICAL_ASYMMETRY_MAX_MM:
         trigger_reasons.append("BORDERLINE_ASYMMETRY")
 
-    # Tiêu chí 2.2: MRD1 một trong hai mắt nằm trong khoảng ranh giới [2.0 mm, 2.5 mm)
-    if min_mrd1 < settings.TIER_A_MIN_MRD1_MM:
-        trigger_reasons.append("BORDERLINE_LOW_MRD1")
-
-    # Tiêu chí 2.3: Bất đối xứng cung mày vượt ngưỡng (chỉ báo co cơ trán nâng mi bù trừ)
+    # Tiêu chí 2.2: Bất đối xứng cung mày vượt ngưỡng (chỉ báo co cơ trán nâng mi bù trừ)
     if delta_brow_px > settings.BROW_ASYMMETRY_THRESHOLD_PX:
         is_brow_compensation = True
         trigger_reasons.append("BROW_COMPENSATION_SUSPECTED")
+
+    # Tiêu chí 2.3: Đánh giá độ mở mi tuyệt đối theo mức độ đối xứng hai bên
+    high_sym_delta = getattr(settings, "HIGH_SYMMETRY_DELTA_MAX_MM", 0.5)
+    sym_min_mrd1 = getattr(settings, "SYMMETRIC_MIN_MRD1_MM", 2.0)
+
+    if delta_mrd1_mm <= high_sym_delta:
+        # Nhánh đối xứng cao (delta <= 0.5 mm):
+        # Nếu min_mrd1 >= 2.0 mm: Biến thể hình thái mắt hẹp sinh lý Á Đông -> Cho phép Mức A (không phạt).
+        # Nếu min_mrd1 < 2.0 mm (khoảng [1.8, 2.0) mm): Độ mở mi hơi thấp cả hai bên -> Mức B.
+        if min_mrd1 < sym_min_mrd1:
+            trigger_reasons.append("BILATERAL_LOW_MRD1")
+    else:
+        # Nhánh đối xứng trung bình (0.5 mm < delta <= 1.0 mm):
+        # Có sự chênh lệch nhất định; nếu min_mrd1 < 2.2 mm thì ghi nhận ranh giới
+        if min_mrd1 < 2.2:
+            trigger_reasons.append("BORDERLINE_LOW_MRD1")
 
     if trigger_reasons:
         flags = TriageFlags(

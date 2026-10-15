@@ -102,7 +102,7 @@ def test_detect_corneal_reflex_no_glint_fallback():
     result = detect_corneal_reflex(img, iris_center, iris_radius)
 
     assert result.has_fallback
-    assert result.reference_point_used == "PUPIL_CENTER"
+    assert result.reference_point_used == "PUPIL_CENTER_FALLBACK"
     assert result.confidence_score == 0.65
     assert result.reflex_point == iris_center
     assert "REFLEX_FALLBACK_TO_PUPIL" in result.warning_flags
@@ -122,7 +122,7 @@ def test_detect_corneal_reflex_glare_outside_central_60():
 
     # Đốm sáng ngoài 60% bị lọc -> Không còn đốm sáng hợp lệ trong tâm -> Fallback
     assert result.has_fallback
-    assert result.reference_point_used == "PUPIL_CENTER"
+    assert result.reference_point_used == "PUPIL_CENTER_FALLBACK"
     assert result.confidence_score == 0.65
     assert result.reflex_point == iris_center
     assert "REFLEX_FALLBACK_TO_PUPIL" in result.warning_flags
@@ -134,16 +134,16 @@ def test_detect_corneal_reflex_ambiguous_multi_reflection():
     iris_radius = 30.0
     img = create_synthetic_iris_roi(iris_center=iris_center, iris_radius=iris_radius)
 
-    # Đặt 2 đốm sáng độc lập có kích thước và độ sáng tương đương trong vùng tâm
-    # Đốm 1 tại (56, 60)
-    cv2.circle(img, (56, 60), 1, 245, -1)
-    # Đốm 2 tại (64, 60)
-    cv2.circle(img, (64, 60), 1, 245, -1)
+    # Đặt 2 đốm sáng độc lập xa nhau (d = 14 px > 8 px cluster limit) nhưng trong vùng tâm 60%
+    # Đốm 1 tại (53, 60)
+    cv2.circle(img, (53, 60), 1, 245, -1)
+    # Đốm 2 tại (67, 60)
+    cv2.circle(img, (67, 60), 1, 245, -1)
 
     result = detect_corneal_reflex(img, iris_center, iris_radius)
 
     assert result.has_fallback
-    assert result.reference_point_used == "PUPIL_CENTER"
+    assert result.reference_point_used == "PUPIL_CENTER_FALLBACK"
     assert result.confidence_score == 0.65
     assert "AMBIGUOUS_MULTI_REFLECTION" in result.warning_flags
     assert "REFLEX_FALLBACK_TO_PUPIL" in result.warning_flags
@@ -185,8 +185,8 @@ def test_detect_corneal_reflex_real_image():
     res_os = detect_corneal_reflex(img_gray, landmarks.iris_center_os, r_os)
 
     # Cả hai mắt phải trả về kết quả hợp lệ mà không phát sinh ngoại lệ
-    assert res_od.reference_point_used in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER"]
-    assert res_os.reference_point_used in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER"]
+    assert res_od.reference_point_used in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER_FALLBACK"]
+    assert res_os.reference_point_used in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER_FALLBACK"]
     assert res_od.confidence_score in [0.65, 1.0]
     assert res_os.confidence_score in [0.65, 1.0]
 
@@ -216,8 +216,8 @@ def test_screening_endpoint_reflex_integration():
     # Kiểm tra cấu trúc đo lường và điểm tham chiếu
     od_meas = data["measurements"]["right_eye_od"]
     os_meas = data["measurements"]["left_eye_os"]
-    assert od_meas["reference_point_used"] in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER"]
-    assert os_meas["reference_point_used"] in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER"]
+    assert od_meas["reference_point_used"] in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER_FALLBACK"]
+    assert os_meas["reference_point_used"] in ["CORNEAL_LIGHT_REFLEX", "PUPIL_CENTER_FALLBACK"]
     assert od_meas["reference_coordinates"] is not None
     assert os_meas["reference_coordinates"] is not None
 

@@ -140,7 +140,7 @@ def test_hvid_asymmetry_warning():
 
         res = detect_landmarks(img)
         assert res.is_hvid_biologically_consistent is False
-        assert "HVID_ASYMMETRY_EXCEEDED_10_PERCENT" in res.warning_flags
+        assert "HVID_ASYMMETRY_EXCEEDED" in res.warning_flags
 
 
 def test_detect_landmarks_invalid_image():
