@@ -21,13 +21,13 @@ class Settings(BaseSettings):
     ]
 
     # Ngưỡng phân tầng sàng lọc mi mắt (Đông Á / Dân số học - Asymmetry-First)
-    CRITICAL_SEVERE_MRD1_MM: float = 1.5
+    CRITICAL_SEVERE_MRD1_MM: float = 1.0
     ABSOLUTE_SEVERE_MRD1_MM: float = 2.0
     HIGH_SYMMETRY_DELTA_MAX_MM: float = 0.5
     SYMMETRIC_MIN_MRD1_MM: float = 2.0
     TIER_A_MIN_MRD1_MM: float = 2.5
     TIER_B_MIN_MRD1_MM: float = 2.0
-    PHYSIOLOGICAL_ASYMMETRY_MAX_MM: float = 1.0
+    PHYSIOLOGICAL_ASYMMETRY_MAX_MM: float = 1.5
     BORDERLINE_ASYMMETRY_MAX_MM: float = 2.0
     BROW_ASYMMETRY_THRESHOLD_PX: float = 8.0
 
