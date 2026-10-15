@@ -71,11 +71,18 @@ Hệ thống xử lý ảnh đơn nhất qua đường ống nối tiếp gồm 
 ## Phương pháp đo đạc hình thái học
 
 ### 1. Thước đo giải phẫu quy chuẩn (White-to-White Scale)
+
 Để chuyển đổi từ tọa độ điểm ảnh (pixels) sang milimét (mm) thực tế mà không cần người dùng đặt vật chuẩn ngoại vi (thước kẻ hoặc đồng xu), hệ thống sử dụng **đường kính ngang mống mắt chuẩn** (Corneal Diameter / White-to-White) của người trưởng thành Đông Á:
-$$D_{\text{iris}} = 11.71\text{ mm}$$
+
+$$
+D_{\text{iris}} = 11.71\text{ mm}
+$$
 
 Hệ số quy đổi $\text{Scale}$ trên từng mắt được tính:
-$$\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris, OD}}} \quad (\text{mm/px}), \qquad \text{Scale}_{\text{OS}} = \frac{11.71}{D_{\text{iris, OS}}} \quad (\text{mm/px})$$
+
+$$
+\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris, OD}}} \quad (\text{mm/px}), \qquad \text{Scale}_{\text{OS}} = \frac{11.71}{D_{\text{iris, OS}}} \quad (\text{mm/px})
+$$
 
 ---
 
@@ -85,32 +92,34 @@ $$\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris, OD}}} \quad (\text{mm/p
   1. *Cấp 1 (Chuẩn):* Phản xạ ánh sáng Purkinje thứ nhất ($R_1$).
   2. *Cấp 2 (Dự phòng 1):* Tâm đồng tử hình học (phát hiện qua Otsu Thresholding + RANSAC Ellipse Fitting).
   3. *Cấp 3 (Dự phòng 2):* Tâm mống mắt MediaPipe.
-- **Công thức tính:**
-  $$MRD1_{\text{px}} = y_{\text{ref}} - y_{\text{upper}}$$
-  $$MRD1_{\text{mm}} = MRD1_{\text{px}} \times \text{Scale}$$
+- **Công thức tính:** $MRD1_{\text{px}} = y_{\text{ref}} - y_{\text{upper}}$ và $MRD1_{\text{mm}} = MRD1_{\text{px}} \times \text{Scale}$.
   *(Lưu ý: Trong hệ trục tọa độ hình ảnh số, trục $Y$ hướng xuống, do đó viền mi trên có tọa độ $y$ nhỏ hơn tâm phản quang).*
-- **Khoảng ước lượng danh định:**
-  $$MRD1_{\text{range}} = \left[ MRD1_{\text{mm}} - 0.5,\; MRD1_{\text{mm}} + 0.5 \right]\text{ mm}$$
-  *(Phản ánh dung sai giải phẫu học và góc chiếu sáng $\pm 0.5\text{ mm}$).*
+- **Khoảng ước lượng danh định:** $MRD1_{\text{range}} = \left[ MRD1_{\text{mm}} - 0.5,\; MRD1_{\text{mm}} + 0.5 \right]\text{ mm}$ *(phản ánh dung sai giải phẫu học và góc chiếu sáng $\pm 0.5\text{ mm}$)*.
 
 ---
 
 ### 3. MRD2 (Margin Reflex Distance 2)
 - **Định nghĩa:** Khoảng cách thẳng đứng từ tâm phản quang giác mạc ($R_1$) xuống đến viền bờ mi dưới tại trục nhìn.
-- **Công thức tính:**
-  $$MRD2_{\text{mm}} = (y_{\text{lower}} - y_{\text{ref}}) \times \text{Scale}$$
+- **Công thức tính:** $MRD2_{\text{mm}} = (y_{\text{lower}} - y_{\text{ref}}) \times \text{Scale}$.
 
 ---
 
 ### 4. PFD / PFH (Palpebral Fissure Height / Độ mở khe mi)
 - **Định nghĩa:** Tổng độ cao khe mi theo phương thẳng đứng từ bờ mi dưới lên bờ mi trên:
-  $$PFD = MRD1 + MRD2 = (y_{\text{lower}} - y_{\text{upper}}) \times \text{Scale}$$
+
+$$
+PFD = MRD1 + MRD2 = (y_{\text{lower}} - y_{\text{upper}}) \times \text{Scale}
+$$
 
 ---
 
 ### 5. $\Delta MRD1$ (Chỉ số bất đối xứng hai bên)
 - **Định nghĩa:** Độ chênh lệch tuyệt đối về độ cao mi trên giữa mắt trái (OS) và mắt phải (OD):
-  $$\Delta MRD1 = \lvert MRD1_{\text{OS}} - MRD1_{\text{OD}} \rvert$$
+
+$$
+\Delta MRD1 = \lvert MRD1_{\text{OS}} - MRD1_{\text{OD}} \rvert
+$$
+
 - **Bảng phân loại mức độ đối xứng:**
   | Khoảng giá trị $\Delta MRD1$ | Phân loại hình thái | Ý nghĩa lâm sàng |
   | :--- | :--- | :--- |
@@ -122,7 +131,11 @@ $$\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris, OD}}} \quad (\text{mm/p
 
 ### 6. $\Delta Brow$ (Độ chênh lệch cung mày / Co cơ trán bù trừ)
 - Khi một bên mi bị sụp, người dùng thường có phản xạ tự nhiên co cơ trán bên đó để kéo mi mắt lên, làm cung mày bị nhướng cao bất thường:
-  $$\Delta Brow = \lvert H_{\text{brow, OS}} - H_{\text{brow, OD}} \rvert \quad (\text{pixels})$$
+
+$$
+\Delta Brow = \lvert H_{\text{brow, OS}} - H_{\text{brow, OD}} \rvert \quad (\text{pixels})
+$$
+
 - Nếu $\Delta Brow > 8.0\text{ px}$, hệ thống sẽ kích hoạt cờ nghi ngờ có co cơ trán nâng mi bù trừ (`BROW_COMPENSATION_SUSPECTED`).
 
 ---
