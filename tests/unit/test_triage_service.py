@@ -26,46 +26,46 @@ SAMPLE_IMAGE_PATH = get_sample_image_path()
 @pytest.mark.parametrize(
     "case_id, od_mrd1, os_mrd1, delta_mrd1, delta_brow, is_occluded, expected_tier, expected_bilateral_severe",
     [
-        # TC-7.1: MRD1_OD=4.0, MRD1_OS=4.0 -> Mức A
+        # TC-7.1: MRD1_OD=4.0, MRD1_OS=4.0, delta=0.0 -> Mức A
         ("TC-7.1", 4.0, 4.0, 0.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.2: MRD1_OD=4.0, MRD1_OS=2.8, delta=1.2 -> Mức B (bất đối xứng ranh giới)
-        ("TC-7.2", 4.0, 2.8, 1.2, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.3: MRD1_OD=4.0, MRD1_OS=2.3, delta=1.7 -> Mức B (bất đối xứng ranh giới <= 2.0mm)
+        # TC-7.2: MRD1_OD=4.0, MRD1_OS=2.8, delta=1.2 -> Mức A (đối xứng sinh lý delta <= 1.5mm)
+        ("TC-7.2", 4.0, 2.8, 1.2, 0.0, False, ScreeningTier.TIER_A, False),
+        # TC-7.3: MRD1_OD=4.0, MRD1_OS=2.3, delta=1.7 -> Mức B (ranh giới 1.5 < delta <= 2.0mm)
         ("TC-7.3", 4.0, 2.3, 1.7, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.4: MRD1_OD=1.0, MRD1_OS=1.0, delta=0.0 -> Mức C (chốt chặn nghiêm trọng < 1.5mm)
-        ("TC-7.4", 1.0, 1.0, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
-        # TC-7.5: MRD1_OD=1.5, MRD1_OS=1.5 -> Mức C (chốt chặn hai mắt < 1.8mm)
-        ("TC-7.5", 1.5, 1.5, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
-        # TC-7.6: MRD1_OD=2.0, MRD1_OS=2.0, delta=0.0 -> Mức A (đối xứng cao delta <= 0.5, min >= 2.0mm)
-        ("TC-7.6", 2.0, 2.0, 0.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.7: MRD1_OD=3.0, MRD1_OS=3.0 -> Mức A
+        # TC-7.4: MRD1_OD=0.8, MRD1_OS=0.8, delta=0.0 -> Mức C (ngoại lệ che trục nhìn cả 2 mắt < 1.0mm)
+        ("TC-7.4", 0.8, 0.8, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
+        # TC-7.5: MRD1_OD=0.9, MRD1_OS=2.0, delta=1.1 -> Mức C (ngoại lệ 1 mắt < 1.0mm dù delta <= 1.5mm)
+        ("TC-7.5", 0.9, 2.0, 1.1, 0.0, False, ScreeningTier.TIER_C, False),
+        # TC-7.6: MRD1_OD=1.8, MRD1_OS=1.9, delta=0.1 -> Mức A (mắt hẹp sinh lý Á Đông, min >= 1.0mm)
+        ("TC-7.6", 1.8, 1.9, 0.1, 0.0, False, ScreeningTier.TIER_A, False),
+        # TC-7.7: MRD1_OD=3.0, MRD1_OS=3.0, delta=0.0 -> Mức A
         ("TC-7.7", 3.0, 3.0, 0.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.8: MRD1_OD=2.5, MRD1_OS=2.5 -> Mức A (ngưỡng sàn Mức A)
+        # TC-7.8: MRD1_OD=2.5, MRD1_OS=2.5, delta=0.0 -> Mức A
         ("TC-7.8", 2.5, 2.5, 0.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.9: MRD1_OD=2.4, MRD1_OS=2.4, delta=0.0 -> Mức A (đối xứng cao delta <= 0.5, hình thái Á Đông không bị phạt)
+        # TC-7.9: MRD1_OD=2.4, MRD1_OS=2.4, delta=0.0 -> Mức A
         ("TC-7.9", 2.4, 2.4, 0.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.10: Phản quang bị che lấp -> Mức C (bất kể MRD1 cao)
+        # TC-7.10: Phản quang bị che lấp -> Mức C (bất kể MRD1)
         ("TC-7.10", 3.5, 3.5, 0.0, 0.0, True, ScreeningTier.TIER_C, False),
-        # TC-7.11: MRD1_OD=4.0, MRD1_OS=3.0, delta=1.0 -> Mức A (ngưỡng biên delta <= 1.0)
+        # TC-7.11: MRD1_OD=4.0, MRD1_OS=3.0, delta=1.0 -> Mức A
         ("TC-7.11", 4.0, 3.0, 1.0, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.12: MRD1_OD=4.0, MRD1_OS=2.9, delta=1.1 -> Mức B (vượt delta 1.0)
-        ("TC-7.12", 4.0, 2.9, 1.1, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.13: MRD1_OD=4.0, MRD1_OS=2.0, delta=2.0 -> Mức B (ngưỡng biên delta <= 2.0)
-        ("TC-7.13", 4.0, 2.0, 2.0, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.14: MRD1_OD=4.5, MRD1_OS=2.4, delta=2.1 -> Mức C (vượt delta > 2.0mm cảnh báo cần thăm khám)
-        ("TC-7.14", 4.5, 2.4, 2.1, 0.0, False, ScreeningTier.TIER_C, False),
-        # TC-7.15: delta_Brow > threshold, MRD1 bình thường -> Mức B (co cơ trán bù trừ)
-        ("TC-7.15", 3.0, 3.0, 0.0, 10.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.16: MRD1_OD=1.9, MRD1_OS=4.0 -> Mức C (chốt chặn 1 mắt < 2.0mm và delta > 1.0mm)
-        ("TC-7.16", 1.9, 4.0, 2.1, 0.0, False, ScreeningTier.TIER_C, False),
-        # TC-7.17: MRD1_OD=0.0, MRD1_OS=4.0 -> Mức C (sụp mi hoàn toàn)
+        # TC-7.12: MRD1_OD=4.0, MRD1_OS=2.5, delta=1.5 -> Mức A (ngưỡng biên sinh lý delta <= 1.5mm)
+        ("TC-7.12", 4.0, 2.5, 1.5, 0.0, False, ScreeningTier.TIER_A, False),
+        # TC-7.13: MRD1_OD=4.0, MRD1_OS=2.4, delta=1.6 -> Mức B (vượt 1.5mm vào ranh giới)
+        ("TC-7.13", 4.0, 2.4, 1.6, 0.0, False, ScreeningTier.TIER_B, False),
+        # TC-7.14: MRD1_OD=4.0, MRD1_OS=2.0, delta=2.0 -> Mức B (ngưỡng biên ranh giới delta <= 2.0mm)
+        ("TC-7.14", 4.0, 2.0, 2.0, 0.0, False, ScreeningTier.TIER_B, False),
+        # TC-7.15: 1.5 < delta <= 2.0 kèm delta_Brow > 8px -> Mức B (co cơ trán bù trừ)
+        ("TC-7.15", 4.0, 2.3, 1.7, 10.0, False, ScreeningTier.TIER_B, False),
+        # TC-7.16: MRD1_OD=4.5, MRD1_OS=2.4, delta=2.1 -> Mức C (vượt delta > 2.0mm)
+        ("TC-7.16", 4.5, 2.4, 2.1, 0.0, False, ScreeningTier.TIER_C, False),
+        # TC-7.17: MRD1_OD=0.0, MRD1_OS=4.0 -> Mức C (ngoại lệ sụp mi hoàn toàn)
         ("TC-7.17", 0.0, 4.0, 4.0, 0.0, False, ScreeningTier.TIER_C, False),
-        # TC-7.18: MRD1_OD=-1.0, MRD1_OS=4.0 -> Mức C (MRD1 âm)
+        # TC-7.18: MRD1_OD=-1.0, MRD1_OS=4.0 -> Mức C (ngoại lệ MRD1 âm)
         ("TC-7.18", -1.0, 4.0, 5.0, 0.0, False, ScreeningTier.TIER_C, False),
-        # TC-7.19: MRD1_OD=2.1, MRD1_OS=2.3, delta=0.2 -> Mức A (đối xứng cao delta=0.2 <= 0.5, min >= 2.0mm)
-        ("TC-7.19", 2.1, 2.3, 0.2, 0.0, False, ScreeningTier.TIER_A, False),
-        # TC-7.20: MRD1_OD=2.5, MRD1_OS=3.5, delta=1.0 -> Mức A (biên đối xứng)
-        ("TC-7.20", 2.5, 3.5, 1.0, 0.0, False, ScreeningTier.TIER_A, False),
+        # TC-7.19: MRD1_OD=2.1, MRD1_OS=3.5, delta=1.4 -> Mức A (delta <= 1.5mm, min >= 1.0mm)
+        ("TC-7.19", 2.1, 3.5, 1.4, 0.0, False, ScreeningTier.TIER_A, False),
+        # TC-7.20: MRD1_OD=2.5, MRD1_OS=4.2, delta=1.7 -> Mức B (1.5 < delta <= 2.0mm)
+        ("TC-7.20", 2.5, 4.2, 1.7, 0.0, False, ScreeningTier.TIER_B, False),
     ],
 )
 def test_all_20_triage_decision_tree_cases(
@@ -101,8 +101,8 @@ def test_all_20_triage_decision_tree_cases(
 def test_safety_disclaimer_presence_in_all_tiers():
     """Kiểm tra thông cáo an toàn bắt buộc xuất hiện trong mọi mức A, B, C."""
     res_a = evaluate_triage(3.5, 3.5, 0.0)
-    res_b = evaluate_triage(4.0, 2.8, 1.2)
-    res_c = evaluate_triage(1.2, 1.2, 0.0)
+    res_b = evaluate_triage(4.0, 2.3, 1.7)
+    res_c = evaluate_triage(0.8, 0.8, 0.0)
 
     for res in [res_a, res_b, res_c]:
         assert "chỉ mang tính sàng lọc" in res.safety_disclaimer_vi
@@ -111,12 +111,20 @@ def test_safety_disclaimer_presence_in_all_tiers():
 
 
 def test_brow_compensation_flag():
-    """Kiểm tra cờ co cơ trán nâng mi bù trừ được kích hoạt chính xác."""
-    res = evaluate_triage(3.0, 3.0, 0.0, delta_brow_px=12.0)
+    """Kiểm tra cờ co cơ trán nâng mi bù trừ được kích hoạt chính xác khi có bất đối xứng mi ranh giới."""
+    res = evaluate_triage(4.0, 2.3, 1.7, delta_brow_px=12.0)
     assert res.tier == ScreeningTier.TIER_B
     assert res.flags is not None
     assert res.flags.is_brow_compensation_detected is True
     assert "BROW_COMPENSATION_SUSPECTED" in res.trigger_reasons
+
+
+def test_user_case_delta_0_6_remains_tier_a():
+    """Kiểm tra trường hợp thực tế: delta_MRD1 = 0.6mm (<= 1.5mm) dù delta_brow = 15.0px vẫn phải là Mức A."""
+    res = evaluate_triage(2.22, 1.62, 0.60, delta_brow_px=15.0)
+    assert res.tier == ScreeningTier.TIER_A
+    assert res.flags.is_brow_compensation_detected is False
+    assert "PHYSIOLOGICAL_NORMAL" in res.trigger_reasons
 
 
 def test_triage_integration_with_screening_endpoint():
@@ -146,7 +154,11 @@ def test_triage_integration_with_screening_endpoint():
 
 def test_significant_asymmetry_over_2mm_trigger():
     """Kiểm tra bất đối xứng delta_MRD1 > 2.0mm mới kích hoạt Mức C với lý do SIGNIFICANT_ASYMMETRY_OVER_2MM."""
-    # delta = 1.8 mm (<= 2.0 mm) -> Mức B
+    # delta = 1.4 mm (<= 1.5 mm) -> Mức A
+    res_a = evaluate_triage(4.0, 2.6, 1.4)
+    assert res_a.tier == ScreeningTier.TIER_A
+
+    # delta = 1.8 mm (1.5 < delta <= 2.0 mm) -> Mức B
     res_b = evaluate_triage(4.0, 2.2, 1.8)
     assert res_b.tier == ScreeningTier.TIER_B
     assert "BORDERLINE_ASYMMETRY" in res_b.trigger_reasons
@@ -162,3 +174,17 @@ def test_significant_asymmetry_over_2mm_trigger():
     res_c = evaluate_triage(4.5, 2.4, 2.1)
     assert res_c.tier == ScreeningTier.TIER_C
     assert "SIGNIFICANT_ASYMMETRY_OVER_2MM" in res_c.trigger_reasons
+
+
+def test_fail_safe_exception_under_1mm():
+    """Kiểm tra ngoại lệ chốt chặn an toàn: MRD1 < 1.0mm luôn kích hoạt Mức C bất kể delta_MRD1."""
+    # Trường hợp 1: delta gần như bằng 0 (0.1 mm) nhưng cả 2 mắt < 1.0mm
+    res_bilateral = evaluate_triage(0.6, 0.7, 0.1)
+    assert res_bilateral.tier == ScreeningTier.TIER_C
+    assert res_bilateral.is_bilateral_severe_triggered is True
+    assert "BILATERAL_SEVERE_MRD1_UNDER_1MM" in res_bilateral.trigger_reasons
+
+    # Trường hợp 2: delta = 1.2 mm (<= 1.5 mm) nhưng có 1 mắt < 1.0mm
+    res_unilateral = evaluate_triage(0.8, 2.0, 1.2)
+    assert res_unilateral.tier == ScreeningTier.TIER_C
+    assert "UNILATERAL_SEVERE_MRD1_UNDER_1MM" in res_unilateral.trigger_reasons

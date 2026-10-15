@@ -71,11 +71,18 @@ Hệ thống xử lý ảnh đơn nhất qua đường ống nối tiếp gồm 
 ## Phương pháp đo đạc hình thái học
 
 ### 1. Thước đo giải phẫu quy chuẩn (White-to-White Scale)
+
 Để chuyển đổi từ tọa độ điểm ảnh (pixels) sang milimét (mm) thực tế mà không cần người dùng đặt vật chuẩn ngoại vi (thước kẻ hoặc đồng xu), hệ thống sử dụng **đường kính ngang mống mắt chuẩn** (Corneal Diameter / White-to-White) của người trưởng thành Đông Á:
-$$D_{\text{iris\_standard}} = 11.71\text{ mm}$$
+
+$$
+D_{\text{iris}} = 11.71\text{ mm}
+$$
 
 Hệ số quy đổi $\text{Scale}$ trên từng mắt được tính:
-$$\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris\_px\_OD}}} \quad (\text{mm/px}), \qquad \text{Scale}_{\text{OS}} = \frac{11.71}{D_{\text{iris\_px\_OS}}} \quad (\text{mm/px})$$
+
+$$
+\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris, OD}}} \quad (\text{mm/px}), \qquad \text{Scale}_{\text{OS}} = \frac{11.71}{D_{\text{iris, OS}}} \quad (\text{mm/px})
+$$
 
 ---
 
@@ -85,88 +92,83 @@ $$\text{Scale}_{\text{OD}} = \frac{11.71}{D_{\text{iris\_px\_OD}}} \quad (\text{
   1. *Cấp 1 (Chuẩn):* Phản xạ ánh sáng Purkinje thứ nhất ($R_1$).
   2. *Cấp 2 (Dự phòng 1):* Tâm đồng tử hình học (phát hiện qua Otsu Thresholding + RANSAC Ellipse Fitting).
   3. *Cấp 3 (Dự phòng 2):* Tâm mống mắt MediaPipe.
-- **Công thức tính:**
-  $$MRD1_{\text{px}} = y_{\text{ref}} - y_{\text{upper\_margin}}$$
-  $$MRD1_{\text{mm}} = MRD1_{\text{px}} \times \text{Scale}$$
+- **Công thức tính:** $MRD1_{\text{px}} = y_{\text{ref}} - y_{\text{upper}}$ và $MRD1_{\text{mm}} = MRD1_{\text{px}} \times \text{Scale}$.
   *(Lưu ý: Trong hệ trục tọa độ hình ảnh số, trục $Y$ hướng xuống, do đó viền mi trên có tọa độ $y$ nhỏ hơn tâm phản quang).*
-- **Khoảng ước lượng danh định:**
-  $$MRD1_{\text{range}} = \left[ MRD1_{\text{mm}} - 0.5,\; MRD1_{\text{mm}} + 0.5 \right]\text{ mm}$$
-  *(Phản ánh dung sai giải phẫu học và góc chiếu sáng $\pm 0.5\text{ mm}$).*
+- **Khoảng ước lượng danh định:** $MRD1_{\text{range}} = \left[ MRD1_{\text{mm}} - 0.5,\; MRD1_{\text{mm}} + 0.5 \right]\text{ mm}$ *(phản ánh dung sai giải phẫu học và góc chiếu sáng $\pm 0.5\text{ mm}$)*.
 
 ---
 
 ### 3. MRD2 (Margin Reflex Distance 2)
 - **Định nghĩa:** Khoảng cách thẳng đứng từ tâm phản quang giác mạc ($R_1$) xuống đến viền bờ mi dưới tại trục nhìn.
-- **Công thức tính:**
-  $$MRD2_{\text{mm}} = (y_{\text{lower\_margin}} - y_{\text{ref}}) \times \text{Scale}$$
+- **Công thức tính:** $MRD2_{\text{mm}} = (y_{\text{lower}} - y_{\text{ref}}) \times \text{Scale}$.
 
 ---
 
 ### 4. PFD / PFH (Palpebral Fissure Height / Độ mở khe mi)
 - **Định nghĩa:** Tổng độ cao khe mi theo phương thẳng đứng từ bờ mi dưới lên bờ mi trên:
-  $$PFD = MRD1 + MRD2 = (y_{\text{lower\_margin}} - y_{\text{upper\_margin}}) \times \text{Scale}$$
+
+$$
+PFD = MRD1 + MRD2 = (y_{\text{lower}} - y_{\text{upper}}) \times \text{Scale}
+$$
 
 ---
 
 ### 5. $\Delta MRD1$ (Chỉ số bất đối xứng hai bên)
 - **Định nghĩa:** Độ chênh lệch tuyệt đối về độ cao mi trên giữa mắt trái (OS) và mắt phải (OD):
-  $$\Delta MRD1 = |MRD1_{\text{OS}} - MRD1_{\text{OD}}|$$
+
+$$
+\Delta MRD1 = \lvert MRD1_{\text{OS}} - MRD1_{\text{OD}} \rvert
+$$
+
 - **Bảng phân loại mức độ đối xứng:**
   | Khoảng giá trị $\Delta MRD1$ | Phân loại hình thái | Ý nghĩa lâm sàng |
   | :--- | :--- | :--- |
-  | $\le 1.0\text{ mm}$ | `PHYSIOLOGICAL_SYMMETRY` | Đối xứng sinh lý bình thường |
-  | $1.0\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$ | `BORDERLINE_ASYMMETRY` | Bất đối xứng ranh giới / cần theo dõi |
+  | $\le 1.5\text{ mm}$ | `PHYSIOLOGICAL_SYMMETRY` | Đối xứng sinh lý bình thường |
+  | $1.5\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$ | `BORDERLINE_ASYMMETRY` | Bất đối xứng ranh giới / cần theo dõi |
   | $> 2.0\text{ mm}$ | `SIGNIFICANT_ASYMMETRY` | **Bất đối xứng rõ rệt** $\rightarrow$ Kích hoạt cảnh báo Mức C |
 
 ---
 
 ### 6. $\Delta Brow$ (Độ chênh lệch cung mày / Co cơ trán bù trừ)
 - Khi một bên mi bị sụp, người dùng thường có phản xạ tự nhiên co cơ trán bên đó để kéo mi mắt lên, làm cung mày bị nhướng cao bất thường:
-  $$\Delta Brow = |H_{\text{brow\_OS}} - H_{\text{brow\_OD}}| \quad (\text{pixels})$$
+
+$$
+\Delta Brow = \lvert H_{\text{brow, OS}} - H_{\text{brow, OD}} \rvert \quad (\text{pixels})
+$$
+
 - Nếu $\Delta Brow > 8.0\text{ px}$, hệ thống sẽ kích hoạt cờ nghi ngờ có co cơ trán nâng mi bù trừ (`BROW_COMPENSATION_SUSPECTED`).
 
 ---
 
 ## Cây quyết định phân tầng sàng lọc
 
-Cây quyết định hoạt động theo triết lý **Ưu tiên Bất đối xứng (Asymmetry-First)** kết hợp **Chốt chặn an toàn (Fail-Safe)**:
+Cây quyết định hoạt động theo triết lý **Ưu tiên Bất đối xứng (Asymmetry-First)** với **Chốt chặn Ngoại lệ Che lấp Trục nhìn**:
 
 ```
 [ Bắt đầu đánh giá ]
        │
-       ├─► [1] Bờ mi che lấp hoàn toàn phản quang? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ├─► [NGOẠI LỆ 1] Bờ mi che lấp hoàn toàn phản quang? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ├─► [2] min(MRD1) < 1.5mm HOẶC cả hai mắt < 1.8mm? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ├─► [NGOẠI LỆ 2] min(MRD1) < 1.0 mm (bất kể ΔMRD1)? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ├─► [3] ΔMRD1 > 2.0 mm (Bất đối xứng rõ rệt)? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ▼ (Không vi phạm ngoại lệ: min(MRD1) ≥ 1.0 mm)
        │
-       ├─► [4] Một mắt < 2.0mm VÀ ΔMRD1 > 1.0mm? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ├─► [ƯU TIÊN 1] ΔMRD1 > 2.0 mm (Bất đối xứng rõ rệt)? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       │               (Lúc này mới xét chi tiết MRD1 2 mắt để phân định mức độ)
        │
-       ▼ (Không vi phạm các chốt chặn nghiêm trọng)
-       │
-       ├─► [5] 1.0mm < ΔMRD1 ≤ 2.0mm (Chênh lệch ranh giới)? ──► CÓ ──► [ MỨC B (TIER_B) ]
-       │
-       ├─► [6] ΔBrow > 8.0 px (Co cơ trán bù trừ)? ──► CÓ ──► [ MỨC B (TIER_B) ]
-       │
-       ├─► [7] Đánh giá theo độ đối xứng:
-       │     ├─ Nhánh đối xứng cao (ΔMRD1 ≤ 0.5mm):
-       │     │    ├─ min(MRD1) ≥ 2.0mm ──► [ MỨC A (TIER_A) ] (Hình thái mắt hẹp Á Đông)
-       │     │    └─ min(MRD1) < 2.0mm ──► [ MỨC B (TIER_B) ]
-       │     └─ Nhánh đối xứng vừa (0.5mm < ΔMRD1 ≤ 1.0mm):
-       │          ├─ min(MRD1) ≥ 2.2mm ──► [ MỨC A (TIER_A) ]
-       │          └─ min(MRD1) < 2.2mm ──► [ MỨC B (TIER_B) ]
+       ├─► [ƯU TIÊN 2] 1.5 mm < ΔMRD1 ≤ 2.0 mm HOẶC ΔBrow > 8 px? ──► CÓ ──► [ MỨC B (TIER_B) ]
        │
        ▼
- [ MỨC A (TIER_A): Các chỉ số hoàn toàn trong giới hạn sinh lý bình thường ]
+ [ MỨC A (TIER_A): ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) ≥ 1.0 mm (Sinh lý bình thường) ]
 ```
 
 ### Bảng chi tiết 3 mức khuyến nghị:
 
 | Mức phân tầng | Tên gọi chuẩn | Tiêu chí kích hoạt chính | Khuyến nghị hành động đại chúng |
 | :---: | :--- | :--- | :--- |
-| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 0.5\text{ mm}$ và $\min(MRD1) \ge 2.0\text{ mm}$; HOẶC $\min(MRD1) \ge 2.5\text{ mm}$, $\Delta \le 1.0\text{ mm}$, $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
-| **Mức B**<br>`TIER_B` | **Dấu hiệu nghi ngờ / Ranh giới** | $1.0\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$; HOẶC $\Delta Brow > 8.0\text{ px}$; HOẶC độ mở mi hơi thấp cả hai bên ($1.8 \le MRD1 < 2.0\text{ mm}$). | Ghi nhận độ cao mi ở mức ranh giới hoặc có chênh lệch nhẹ. Khuyến nghị theo dõi thêm và cân nhắc thăm khám khi có dịp. |
-| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC $\min(MRD1) < 1.5\text{ mm}$; HOẶC cả hai mắt $< 1.8\text{ mm}$; HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
+| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 1.5\text{ mm}$ VÀ $\min(MRD1) \ge 1.0\text{ mm}$ VÀ $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
+| **Mức B**<br>`TIER_B` | **Dấu hiệu nghi ngờ / Ranh giới** | $1.5\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$; HOẶC $\Delta Brow > 8.0\text{ px}$. | Ghi nhận độ cao mi ở mức ranh giới hoặc có chênh lệch nhẹ. Khuyến nghị theo dõi thêm và cân nhắc thăm khám khi có dịp. |
+| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC **ngoại lệ $\min(MRD1) < 1.0\text{ mm}$** (kể cả khi $\Delta \approx 0$ hay $\Delta < 2.0\text{ mm}$); HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
 
 ---
 
