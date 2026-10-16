@@ -149,9 +149,9 @@ Cây quyết định hoạt động theo triết lý **Ưu tiên Bất đối x�
        │
        ├─► [NGOẠI LỆ 1] Bờ mi che lấp hoàn toàn phản quang? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ├─► [NGOẠI LỆ 2] min(MRD1) < 1.0 mm (bất kể ΔMRD1)? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ├─► [NGOẠI LỆ 2] min(MRD1) ≤ 0 mm (bất kể ΔMRD1)? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ▼ (Không vi phạm ngoại lệ: min(MRD1) ≥ 1.0 mm)
+       ▼ (Không vi phạm ngoại lệ: min(MRD1) > 0 mm)
        │
        ├─► [ƯU TIÊN 1] ΔMRD1 > 2.0 mm (Bất đối xứng rõ rệt)? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │               (Lúc này mới xét chi tiết MRD1 2 mắt để phân định mức độ)
@@ -159,16 +159,16 @@ Cây quyết định hoạt động theo triết lý **Ưu tiên Bất đối x�
        ├─► [ƯU TIÊN 2] 1.5 mm < ΔMRD1 ≤ 2.0 mm HOẶC ΔBrow > 8 px? ──► CÓ ──► [ MỨC B (TIER_B) ]
        │
        ▼
- [ MỨC A (TIER_A): ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) ≥ 1.0 mm (Sinh lý bình thường) ]
+ [ MỨC A (TIER_A): ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) > 0 mm (Sinh lý bình thường) ]
 ```
 
 ### Bảng chi tiết 3 mức khuyến nghị:
 
 | Mức phân tầng | Tên gọi chuẩn | Tiêu chí kích hoạt chính | Khuyến nghị hành động đại chúng |
 | :---: | :--- | :--- | :--- |
-| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 1.5\text{ mm}$ VÀ $\min(MRD1) \ge 1.0\text{ mm}$ VÀ $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
+| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 1.5\text{ mm}$ VÀ $\min(MRD1) > 0\text{ mm}$ VÀ $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
 | **Mức B**<br>`TIER_B` | **Dấu hiệu nghi ngờ / Ranh giới** | $1.5\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$; HOẶC $\Delta Brow > 8.0\text{ px}$. | Ghi nhận độ cao mi ở mức ranh giới hoặc có chênh lệch nhẹ. Khuyến nghị theo dõi thêm và cân nhắc thăm khám khi có dịp. |
-| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC **ngoại lệ $\min(MRD1) < 1.0\text{ mm}$** (kể cả khi $\Delta \approx 0$ hay $\Delta < 2.0\text{ mm}$); HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
+| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC **ngoại lệ $\min(MRD1) \le 0\text{ mm}$** (kể cả khi $\Delta \approx 0$ hay $\Delta < 2.0\text{ mm}$); HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
 
 ---
 

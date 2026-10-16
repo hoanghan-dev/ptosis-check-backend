@@ -1,11 +1,11 @@
 """
 Dịch vụ Phân tầng Nguy cơ Ưu tiên Bất đối xứng (Module M7: Asymmetry-First Triage Engine).
 Triển khai cây quyết định lâm sàng 3 mức (TIER_A, TIER_B, TIER_C) dựa trên:
-- Ngoại lệ chốt chặn an toàn: min(MRD1) < 1.0 mm (bất kể delta_MRD1) hoặc phản quang bị che lấp -> Mức C.
+- Ngoại lệ chốt chặn an toàn: min(MRD1) <= 0.0 mm (bất kể delta_MRD1) hoặc phản quang bị che lấp -> Mức C.
 - Căn cứ ưu tiên cao nhất (Bất đối xứng hai bên delta_MRD1):
   + Tiêu chí ưu tiên: delta_MRD1 > 2.0 mm -> Mức C (lúc này mới xét chi tiết MRD1 2 mắt để phân định mức độ).
   + Tiêu chí ranh giới: 1.5 mm < delta_MRD1 <= 2.0 mm HOẶC delta_Brow > 8.0 px -> Mức B.
-  + Sinh lý bình thường: delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 1.0 mm VÀ delta_Brow <= 8.0 px -> Mức A.
+  + Sinh lý bình thường: delta_MRD1 <= 1.5 mm VÀ min(MRD1) > 0.0 mm VÀ delta_Brow <= 8.0 px -> Mức A.
 
 Tuân thủ tuyệt đối:
 - G3 (Asymmetry-First & Bilateral Fail-Safe)
@@ -91,14 +91,14 @@ def evaluate_triage(
     if is_reflex_occluded:
         trigger_reasons.append("REFLEX_OCCLUDED_SEVERE")
 
-    # Ngoại lệ 0.2: min(MRD1) < 1.0 mm (kể cả khi delta_MRD1 gần như bằng nhau hoặc < 2.0 mm)
-    critical_threshold = getattr(settings, "CRITICAL_SEVERE_MRD1_MM", 1.0)
-    if min_mrd1 < critical_threshold:
-        if od_val < critical_threshold and os_val < critical_threshold:
+    # Ngoại lệ 0.2: min(MRD1) <= 0.0 mm (bất kể delta_MRD1)
+    critical_threshold = getattr(settings, "CRITICAL_SEVERE_MRD1_MM", 0.0)
+    if min_mrd1 <= critical_threshold:
+        if od_val <= critical_threshold and os_val <= critical_threshold:
             is_bilateral_severe = True
-            trigger_reasons.append("BILATERAL_SEVERE_MRD1_UNDER_1MM")
+            trigger_reasons.append("BILATERAL_SEVERE_MRD1_LE_0MM")
         else:
-            trigger_reasons.append("UNILATERAL_SEVERE_MRD1_UNDER_1MM")
+            trigger_reasons.append("UNILATERAL_SEVERE_MRD1_LE_0MM")
 
     # Nếu vi phạm bất kỳ ngoại lệ chốt chặn an toàn nào -> MỨC C ngay lập tức
     if trigger_reasons:
@@ -165,7 +165,7 @@ def evaluate_triage(
         )
 
     # =========================================================================
-    # GIAI ĐOẠN 2: ĐỐI XỨNG SINH LÝ BÌNH THƯỜNG (delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 1.0 mm) -> MỨC A
+    # GIAI ĐOẠN 2: ĐỐI XỨNG SINH LÝ BÌNH THƯỜNG (delta_MRD1 <= 1.5 mm VÀ min(MRD1) > 0.0 mm) -> MỨC A
     # Ưu tiên cao nhất: Khi hai mắt đối xứng sinh lý (delta <= 1.5mm) thì luôn là Mức A,
     # độ chênh lệch chân mày tự nhiên không làm tăng bậc phân tầng.
     # =========================================================================

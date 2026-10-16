@@ -32,10 +32,10 @@ SAMPLE_IMAGE_PATH = get_sample_image_path()
         ("TC-7.2", 4.0, 2.8, 1.2, 0.0, False, ScreeningTier.TIER_A, False),
         # TC-7.3: MRD1_OD=4.0, MRD1_OS=2.3, delta=1.7 -> Mức B (ranh giới 1.5 < delta <= 2.0mm)
         ("TC-7.3", 4.0, 2.3, 1.7, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.4: MRD1_OD=0.8, MRD1_OS=0.8, delta=0.0 -> Mức C (ngoại lệ che trục nhìn cả 2 mắt < 1.0mm)
-        ("TC-7.4", 0.8, 0.8, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
-        # TC-7.5: MRD1_OD=0.9, MRD1_OS=2.0, delta=1.1 -> Mức C (ngoại lệ 1 mắt < 1.0mm dù delta <= 1.5mm)
-        ("TC-7.5", 0.9, 2.0, 1.1, 0.0, False, ScreeningTier.TIER_C, False),
+        # TC-7.4: MRD1_OD=0.0, MRD1_OS=0.0, delta=0.0 -> Mức C (ngoại lệ che trục nhìn cả 2 mắt <= 0.0mm)
+        ("TC-7.4", 0.0, 0.0, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
+        # TC-7.5: MRD1_OD=0.0, MRD1_OS=1.2, delta=1.2 -> Mức C (ngoại lệ 1 mắt <= 0.0mm dù delta <= 1.5mm)
+        ("TC-7.5", 0.0, 1.2, 1.2, 0.0, False, ScreeningTier.TIER_C, False),
         # TC-7.6: MRD1_OD=1.8, MRD1_OS=1.9, delta=0.1 -> Mức A (mắt hẹp sinh lý Á Đông, min >= 1.0mm)
         ("TC-7.6", 1.8, 1.9, 0.1, 0.0, False, ScreeningTier.TIER_A, False),
         # TC-7.7: MRD1_OD=3.0, MRD1_OS=3.0, delta=0.0 -> Mức A
@@ -102,7 +102,7 @@ def test_safety_disclaimer_presence_in_all_tiers():
     """Kiểm tra thông cáo an toàn bắt buộc xuất hiện trong mọi mức A, B, C."""
     res_a = evaluate_triage(3.5, 3.5, 0.0)
     res_b = evaluate_triage(4.0, 2.3, 1.7)
-    res_c = evaluate_triage(0.8, 0.8, 0.0)
+    res_c = evaluate_triage(0.0, 0.0, 0.0)
 
     for res in [res_a, res_b, res_c]:
         assert "chỉ mang tính sàng lọc" in res.safety_disclaimer_vi
@@ -176,15 +176,34 @@ def test_significant_asymmetry_over_2mm_trigger():
     assert "SIGNIFICANT_ASYMMETRY_OVER_2MM" in res_c.trigger_reasons
 
 
-def test_fail_safe_exception_under_1mm():
-    """Kiểm tra ngoại lệ chốt chặn an toàn: MRD1 < 1.0mm luôn kích hoạt Mức C bất kể delta_MRD1."""
-    # Trường hợp 1: delta gần như bằng 0 (0.1 mm) nhưng cả 2 mắt < 1.0mm
-    res_bilateral = evaluate_triage(0.6, 0.7, 0.1)
+def test_fail_safe_exception_le_0mm():
+    """Kiểm tra ngoại lệ chốt chặn an toàn: min(MRD1) <= 0.0mm luôn kích hoạt Mức C bất kể delta_MRD1."""
+    # Trường hợp 1: delta = 0.0 mm nhưng cả 2 mắt <= 0.0mm
+    res_bilateral = evaluate_triage(0.0, 0.0, 0.0)
     assert res_bilateral.tier == ScreeningTier.TIER_C
     assert res_bilateral.is_bilateral_severe_triggered is True
-    assert "BILATERAL_SEVERE_MRD1_UNDER_1MM" in res_bilateral.trigger_reasons
+    assert "BILATERAL_SEVERE_MRD1_LE_0MM" in res_bilateral.trigger_reasons
 
-    # Trường hợp 2: delta = 1.2 mm (<= 1.5 mm) nhưng có 1 mắt < 1.0mm
-    res_unilateral = evaluate_triage(0.8, 2.0, 1.2)
+    # Trường hợp 2: delta = 1.0 mm (<= 1.5 mm) nhưng có 1 mắt <= 0.0mm
+    res_unilateral = evaluate_triage(0.0, 1.0, 1.0)
     assert res_unilateral.tier == ScreeningTier.TIER_C
-    assert "UNILATERAL_SEVERE_MRD1_UNDER_1MM" in res_unilateral.trigger_reasons
+    assert res_unilateral.is_bilateral_severe_triggered is False
+    assert "UNILATERAL_SEVERE_MRD1_LE_0MM" in res_unilateral.trigger_reasons
+
+    # Trường hợp 3: MRD1 âm (ví dụ -0.5mm do mi che sâu qua phản quang)
+    res_negative = evaluate_triage(-0.5, 0.8, 1.3)
+    assert res_negative.tier == ScreeningTier.TIER_C
+    assert "UNILATERAL_SEVERE_MRD1_LE_0MM" in res_negative.trigger_reasons
+
+
+def test_mrd1_sub_1mm_symmetric_remains_tier_a():
+    """Kiểm tra trường hợp mắt hẹp sinh lý Á Đông (0.0 < MRD1 < 1.0mm) nhưng đối xứng delta <= 1.5mm thì vẫn là Mức A."""
+    # Hai mắt đều 0.8mm, đối xứng tuyệt đối -> Mức A
+    res_symmetric = evaluate_triage(0.8, 0.8, 0.0)
+    assert res_symmetric.tier == ScreeningTier.TIER_A
+    assert "PHYSIOLOGICAL_NORMAL" in res_symmetric.trigger_reasons
+
+    # Một mắt 0.9mm, một mắt 2.0mm, chênh lệch delta = 1.1mm (<= 1.5mm) -> Mức A
+    res_mild_diff = evaluate_triage(0.9, 2.0, 1.1)
+    assert res_mild_diff.tier == ScreeningTier.TIER_A
+    assert "PHYSIOLOGICAL_NORMAL" in res_mild_diff.trigger_reasons
