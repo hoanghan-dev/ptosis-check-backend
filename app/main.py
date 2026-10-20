@@ -24,9 +24,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -39,7 +39,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         return response
 
