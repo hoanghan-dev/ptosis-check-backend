@@ -82,7 +82,8 @@ def test_analyze_valid_jpeg():
 
 def test_analyze_corrupt_data():
     """Kiểm thử gửi dữ liệu hỏng / không thể decode thành ảnh -> HTTP 400."""
-    corrupt_bytes = b"This is not an image file format at all"
+    # Tạo payload đủ lớn (> 50KB) nhưng corrupt để vượt qua bước check file size
+    corrupt_bytes = b"This is not an image file format at all" * 2000
     files = {"file": ("corrupt.jpg", io.BytesIO(corrupt_bytes), "image/jpeg")}
     response = client.post("/api/v1/screening/analyze", files=files)
 
@@ -90,6 +91,54 @@ def test_analyze_corrupt_data():
     data = response.json()
     assert "detail" in data
     assert "Không thể giải mã" in data["detail"]
+
+
+def test_analyze_file_size_validation_fullface():
+    """Kiểm thử từ chối ảnh < 50KB trong chế độ fullface."""
+    tiny_bytes = b"tiny" * 5000  # ~20KB < 50KB
+    files = {"file": ("tiny.jpg", io.BytesIO(tiny_bytes), "image/jpeg")}
+    response = client.post("/api/v1/screening/analyze", files=files, data={"image_type": "fullface"})
+
+    assert response.status_code == 400
+    assert "Dung lượng tệp quá nhỏ (< 50KB)" in response.json()["detail"]
+
+
+def test_analyze_file_size_validation_eye_crop_reject_small():
+    """Kiểm thử từ chối ảnh < 10KB trong chế độ eye_crop."""
+    tiny_bytes = b"tiny" * 1500  # ~6KB < 10KB
+    files = {"file": ("tiny_crop.jpg", io.BytesIO(tiny_bytes), "image/jpeg")}
+    response = client.post("/api/v1/screening/analyze", files=files, data={"image_type": "eye_crop"})
+
+    assert response.status_code == 400
+    assert "Dung lượng tệp quá nhỏ (< 10KB)" in response.json()["detail"]
+
+
+def test_analyze_file_size_validation_eye_crop_accept_15kb():
+    """Kiểm thử chấp thuận ảnh 15KB trong chế độ eye_crop (vượt qua kiểm tra dung lượng)."""
+    # 15KB: trong fullface sẽ bị từ chối (<50KB), nhưng trong eye_crop sẽ vượt qua kiểm tra size
+    # Dữ liệu corrupt để dừng ở bước giải mã ảnh sau khi đã PASS kiểm tra dung lượng
+    synthetic_15kb = b"dummy_header_data" * 900  # ~15.3 KB
+    assert 10 * 1024 <= len(synthetic_15kb) < 50 * 1024
+
+    # Fullface: Phải bị 400 do < 50KB
+    res_fullface = client.post("/api/v1/screening/analyze", files={"file": ("test.jpg", io.BytesIO(synthetic_15kb), "image/jpeg")}, data={"image_type": "fullface"})
+    assert res_fullface.status_code == 400
+    assert "< 50KB" in res_fullface.json()["detail"]
+
+    # Eye crop: Vượt qua kiểm tra size, tiến vào giải mã ảnh (bị 400 Không thể giải mã thay vì lỗi dung lượng)
+    res_crop = client.post("/api/v1/screening/analyze", files={"file": ("test.jpg", io.BytesIO(synthetic_15kb), "image/jpeg")}, data={"image_type": "eye_crop"})
+    assert res_crop.status_code == 400
+    assert "Không thể giải mã" in res_crop.json()["detail"]
+
+
+def test_analyze_file_size_validation_too_large():
+    """Kiểm thử từ chối ảnh > 15MB."""
+    huge_bytes = b"0" * (15 * 1024 * 1024 + 1024)
+    files = {"file": ("huge.jpg", io.BytesIO(huge_bytes), "image/jpeg")}
+    response = client.post("/api/v1/screening/analyze", files=files)
+
+    assert response.status_code == 400
+    assert "vượt quá giới hạn 15MB" in response.json()["detail"]
 
 
 def test_health_check():
