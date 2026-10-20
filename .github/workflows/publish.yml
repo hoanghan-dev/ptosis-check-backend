@@ -1,26 +1,73 @@
-name: Build and Publish Docker Image to GHCR
+name: PtosisCheck CI/CD Pipeline
 
 on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
-  # Lưu ý: docker/metadata-action sẽ tự động chuyển đổi tên repo thành chữ thường (lowercase)
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # ==========================================
+  # JOB 1: AUTOMATED TESTING (CI)
+  # ==========================================
+  test:
+    name: Run Automated Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install system dependencies for OpenCV & MediaPipe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libglib2.0-0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Pytest test suite
+        run: |
+          pytest tests -v
+
+  # ==========================================
+  # JOB 2: BUILD & PUSH DOCKER IMAGE
+  # ==========================================
   build-and-push:
-    name: Build & Push Image
+    name: Build & Push Image to GHCR
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
 
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+
+      - name: Compute Short Commit SHA
+        id: vars
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -39,7 +86,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,format=short,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=raw,value=latest,enable=true
 
       - name: Build and Push Docker image
         uses: docker/build-push-action@v6
@@ -51,3 +98,69 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ==========================================
+  # JOB 3: AUTOMATED DEPLOY TO VPS (CD)
+  # ==========================================
+  deploy:
+    name: Deploy to Production VPS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          script_stop: true
+          envs: SHORT_SHA,IMAGE_TAG
+          script: |
+            set -e
+            cd ~/app
+
+            NEW_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+            FULL_IMAGE="ghcr.io/${{ github.repository }}:${NEW_TAG}"
+
+            echo "=========================================="
+            echo "Starting deployment for version: ${NEW_TAG}"
+            echo "Image: ${FULL_IMAGE}"
+            echo "=========================================="
+
+            # 1. Kéo Docker image mới về VPS
+            docker pull "${FULL_IMAGE}"
+
+            # 2. Cập nhật tag mới vào file docker-compose.prod.yml
+            sed -i -E "s|image: ghcr.io/${{ github.repository }}:.*|image: ${FULL_IMAGE}|g" docker-compose.prod.yml
+
+            # 3. Khởi động lại container với image phiên bản mới
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            # 4. Kiểm tra sức khỏe container (Healthcheck verification)
+            echo "Waiting for container to become healthy..."
+            HEALTHY=0
+            for i in $(seq 1 12); do
+              sleep 5
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' ptosischeck-backend 2>/dev/null || echo "unhealthy")
+              echo "Check $i/12: Container health status is '$STATUS'"
+              if [ "$STATUS" = "healthy" ]; then
+                HEALTHY=1
+                break
+              fi
+            done
+
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "ERROR: Healthcheck failed! Container is not healthy."
+              docker logs --tail 50 ptosischeck-backend
+              exit 1
+            fi
+
+            # 5. Dọn dẹp các image cũ không còn sử dụng (dangling images) để tiết kiệm ổ đĩa
+            docker image prune -f
+
+            echo "=========================================="
+            echo "DEPLOYMENT SUCCESSFUL!"
+            echo "Live version is now: ${NEW_TAG}"
+            echo "=========================================="
