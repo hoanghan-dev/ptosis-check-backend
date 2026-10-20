@@ -31,8 +31,9 @@ def test_strict_diagnostic_language_ban_across_codebase():
     backend_dir = os.path.dirname(backend_tests_dir)
     root_dir = os.path.dirname(backend_dir)
 
-    # Các thư mục chứa mã nguồn của hệ thống
+    # Các thư mục chứa mã nguồn của hệ thống (hỗ trợ cả repo độc lập và monorepo)
     scan_targets = [
+        os.path.join(backend_dir, "app"),
         os.path.join(root_dir, "backend", "app"),
         os.path.join(root_dir, "frontend", "src"),
     ]
@@ -42,7 +43,7 @@ def test_strict_diagnostic_language_ban_across_codebase():
         "/app/app",
     ]
 
-    active_targets = [t for t in scan_targets if os.path.exists(t)]
+    active_targets = list(dict.fromkeys([t for t in scan_targets if os.path.exists(t)]))
     if not active_targets:
         active_targets = [t for t in container_targets if os.path.exists(t)]
 
