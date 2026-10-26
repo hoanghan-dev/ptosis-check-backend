@@ -26,6 +26,7 @@ except Exception as e:
 
 from app.core.config import settings
 from app.schemas.quality import PoseAudit, QualityGateResult
+from app.utils.mediapipe_lock import mediapipe_lock
 
 # Mô hình 3D chuẩn của khuôn mặt (OpenCV camera coordinates: x sang phải, y hướng xuống, z hướng ra xa camera)
 # Các điểm mốc tương ứng: 1 (đỉnh mũi), 152 (cằm), 33 (đuôi mắt phải), 263 (đuôi mắt trái), 61 (khóe miệng phải), 291 (khóe miệng trái)
@@ -288,7 +289,8 @@ def evaluate_quality(image_bgr: np.ndarray) -> QualityGateResult:
         )
 
     rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    results = _FACE_MESH.process(rgb_image)
+    with mediapipe_lock:
+        results = _FACE_MESH.process(rgb_image)
 
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0:
         return QualityGateResult(

@@ -29,6 +29,7 @@ except Exception as e:
 
 from app.core.config import settings
 from app.services.input_router_service import _get_canvas_configs
+from app.utils.mediapipe_lock import mediapipe_lock
 from app.services.landmark_service import (
     LANDMARK_IRIS_CENTER_OD,
     LANDMARK_IRIS_CENTER_OS,
@@ -45,6 +46,96 @@ from app.services.landmark_service import (
     LandmarkResult,
 )
 from app.utils.geometry import euclidean_distance
+
+
+def refine_iris_limbus_cv(
+    image_bgr: np.ndarray,
+    center: Tuple[float, float],
+    radius: float,
+) -> Tuple[Tuple[float, float], float, float]:
+    """
+    Tinh chỉnh viền mống mắt HVID bằng toán tử tích phân đạo hàm hướng tâm (Radial Gradient / Daugman).
+    Sử dụng kênh Green để tối đa hóa độ tương phản giữa mống mắt (tối) và củng mạc (sáng).
+    Bỏ qua cung mí trên để loại bỏ nhiễu bờ mi và lông mi.
+    """
+    cx, cy = float(center[0]), float(center[1])
+    r_init = float(radius)
+
+    h_img, w_img = image_bgr.shape[:2]
+    if r_init < 15.0 or cx <= 0 or cy <= 0 or cx >= w_img or cy >= h_img:
+        return center, radius, 0.0
+
+    roi_pad = int(round(r_init * 1.5))
+    x1 = max(0, int(round(cx)) - roi_pad)
+    y1 = max(0, int(round(cy)) - roi_pad)
+    x2 = min(w_img, int(round(cx)) + roi_pad)
+    y2 = min(h_img, int(round(cy)) + roi_pad)
+
+    roi = image_bgr[y1:y2, x1:x2]
+    if roi.size == 0 or roi.shape[0] < 30 or roi.shape[1] < 30:
+        return center, radius, 0.0
+
+    green = roi[:, :, 1]
+    green_blur = cv2.GaussianBlur(green, (3, 3), 0)
+
+    local_cx = cx - x1
+    local_cy = cy - y1
+
+    angles = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+    sin_a = np.sin(angles)
+    cos_a = np.cos(angles)
+    valid_mask = sin_a > -0.4
+
+    cos_valid = cos_a[valid_mask]
+    sin_valid = sin_a[valid_mask]
+
+    dr = max(2, int(round(r_init * 0.03)))
+    step_xy = max(2, int(round(r_init * 0.04)))
+    step_r = max(2, int(round(r_init * 0.03)))
+
+    search_dx = int(round(r_init * 0.10))
+    search_dy = int(round(r_init * 0.10))
+
+    r_min = int(round(r_init * 0.85))
+    r_max = int(round(r_init * 1.15))
+
+    best_score = -1.0
+    best_res = None
+
+    cx_int = int(round(local_cx))
+    cy_int = int(round(local_cy))
+    roi_h, roi_w = green.shape
+
+    for dy in range(-search_dy, search_dy + 1, step_xy):
+        cur_y = cy_int + dy
+        if cur_y < 20 or cur_y >= roi_h - 20:
+            continue
+        for dx in range(-search_dx, search_dx + 1, step_xy):
+            cur_x = cx_int + dx
+            if cur_x < 20 or cur_x >= roi_w - 20:
+                continue
+
+            for r in range(r_min, r_max + 1, step_r):
+                x_out = np.clip(np.round(cur_x + (r + dr) * cos_valid).astype(int), 0, roi_w - 1)
+                y_out = np.clip(np.round(cur_y + (r + dr) * sin_valid).astype(int), 0, roi_h - 1)
+                x_in = np.clip(np.round(cur_x + (r - dr) * cos_valid).astype(int), 0, roi_w - 1)
+                y_in = np.clip(np.round(cur_y + (r - dr) * sin_valid).astype(int), 0, roi_h - 1)
+
+                diff = green_blur[y_out, x_out].astype(float) - green_blur[y_in, x_in].astype(float)
+                diff = np.maximum(0.0, diff)
+                score = float(np.mean(diff))
+
+                if score > best_score:
+                    best_score = score
+                    best_res = (cur_x, cur_y, r)
+
+    if best_res is not None and best_score >= 7.0:
+        refined_cx = float(x1 + best_res[0])
+        refined_cy = float(y1 + best_res[1])
+        refined_r = float(best_res[2])
+        return (refined_cx, refined_cy), refined_r, best_score
+
+    return center, radius, best_score
 
 
 def process_periocular_crop(
@@ -71,54 +162,59 @@ def process_periocular_crop(
     h, w = image_bgr.shape[:2]
     mean_skin_color = np.median(image_bgr, axis=(0, 1)).astype(np.uint8)
 
-    # Lấy danh sách cấu hình canvas thích ứng
-    configs = _get_canvas_configs(w, h)
+    # Tối ưu hóa độ trễ (NFR-001): Tái sử dụng tọa độ mốc đã phát hiện từ bước InputRouter (Single-Pass Injection)
+    if router_meta and "canvas_landmarks" in router_meta and len(router_meta["canvas_landmarks"]) >= 478:
+        landmarks_px = np.array(router_meta["canvas_landmarks"], dtype=np.float64)
+    else:
+        # Lấy danh sách cấu hình canvas thích ứng
+        configs = _get_canvas_configs(w, h)
 
-    # Nếu router_meta đã tìm thấy cấu hình tối ưu trước đó, ưu tiên thử cấu hình đó đầu tiên
-    preferred_config = router_meta.get("canvas_config") if router_meta else None
-    if preferred_config:
-        configs.sort(key=lambda c: 0 if c[4] == preferred_config else 1)
+        # Nếu router_meta đã tìm thấy cấu hình tối ưu trước đó, ưu tiên thử cấu hình đó đầu tiên
+        preferred_config = router_meta.get("canvas_config") if router_meta else None
+        if preferred_config:
+            configs.sort(key=lambda c: 0 if c[4] == preferred_config else 1)
 
-    face_landmarks = None
-    cw_final = 0
-    ch_final = 0
-    xo_final = 0
-    yo_final = 0
+        face_landmarks = None
+        cw_final = 0
+        ch_final = 0
+        xo_final = 0
+        yo_final = 0
 
-    for cw, ch, xo, yo, label in configs:
-        ch_eff = max(ch, yo + h + 10)
-        cw_eff = max(cw, xo + w + 10)
+        for cw, ch, xo, yo, label in configs:
+            ch_eff = max(ch, yo + h + 10)
+            cw_eff = max(cw, xo + w + 10)
 
-        canvas = np.full((ch_eff, cw_eff, 3), mean_skin_color, dtype=np.uint8)
-        canvas[yo:yo + h, xo:xo + w] = image_bgr
+            canvas = np.full((ch_eff, cw_eff, 3), mean_skin_color, dtype=np.uint8)
+            canvas[yo:yo + h, xo:xo + w] = image_bgr
 
-        canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        results = _PERIOCULAR_FACE_MESH.process(canvas_rgb)
+            canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            with mediapipe_lock:
+                results = _PERIOCULAR_FACE_MESH.process(canvas_rgb)
 
-        if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
-            lms = results.multi_face_landmarks[0].landmark
-            if len(lms) >= 478:
-                face_landmarks = lms
-                cw_final = cw_eff
-                ch_final = ch_eff
-                xo_final = xo
-                yo_final = yo
-                break
+            if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
+                lms = results.multi_face_landmarks[0].landmark
+                if len(lms) >= 478:
+                    face_landmarks = lms
+                    cw_final = cw_eff
+                    ch_final = ch_eff
+                    xo_final = xo
+                    yo_final = yo
+                    break
 
-    if face_landmarks is None:
-        raise ValueError("Không thể nhận diện mốc giải phẫu hai mắt qua canvas thích ứng.")
+        if face_landmarks is None:
+            raise ValueError("Không thể nhận diện mốc giải phẫu hai mắt qua canvas thích ứng.")
 
-    # Ánh xạ ngược 478 mốc về hệ tọa độ gốc của ảnh crop (x_crop, y_crop)
-    landmarks_px = np.array(
-        [
+        # Ánh xạ ngược 478 mốc về hệ tọa độ gốc của ảnh crop (x_crop, y_crop)
+        landmarks_px = np.array(
             [
-                float(lm.x) * float(cw_final) - float(xo_final),
-                float(lm.y) * float(ch_final) - float(yo_final),
-            ]
-            for lm in face_landmarks
-        ],
-        dtype=np.float64,
-    )
+                [
+                    float(lm.x) * float(cw_final) - float(xo_final),
+                    float(lm.y) * float(ch_final) - float(yo_final),
+                ]
+                for lm in face_landmarks
+            ],
+            dtype=np.float64,
+        )
 
     # 1. Tâm mống mắt (mốc 468 cho OD, mốc 473 cho OS)
     iris_center_od = (
@@ -151,9 +247,32 @@ def process_periocular_crop(
     )
     limbus_horizontal_os = (limbus_pt_os_1, limbus_pt_os_2)
 
-    # 3. Tính HVID hai bên mắt
-    hvid_od_px = euclidean_distance(limbus_pt_od_1, limbus_pt_od_2)
-    hvid_os_px = euclidean_distance(limbus_pt_os_1, limbus_pt_os_2)
+    # 3. Tính HVID hai bên mắt & Tinh chỉnh Computer Vision (Solution 1: Daugman Limbus Refinement)
+    hvid_od_init = euclidean_distance(limbus_pt_od_1, limbus_pt_od_2)
+    hvid_os_init = euclidean_distance(limbus_pt_os_1, limbus_pt_os_2)
+
+    refined_od_center, r_od, score_od = refine_iris_limbus_cv(image_bgr, iris_center_od, hvid_od_init / 2.0)
+    refined_os_center, r_os, score_os = refine_iris_limbus_cv(image_bgr, iris_center_os, hvid_os_init / 2.0)
+
+    if score_od >= 7.0:
+        iris_center_od = refined_od_center
+        hvid_od_px = r_od * 2.0
+        limbus_horizontal_od = (
+            (refined_od_center[0] - r_od, refined_od_center[1]),
+            (refined_od_center[0] + r_od, refined_od_center[1]),
+        )
+    else:
+        hvid_od_px = hvid_od_init
+
+    if score_os >= 7.0:
+        iris_center_os = refined_os_center
+        hvid_os_px = r_os * 2.0
+        limbus_horizontal_os = (
+            (refined_os_center[0] - r_os, refined_os_center[1]),
+            (refined_os_center[0] + r_os, refined_os_center[1]),
+        )
+    else:
+        hvid_os_px = hvid_os_init
 
     if hvid_od_px <= 0 or hvid_os_px <= 0:
         raise ValueError("Đường kính mống mắt trích xuất từ ảnh crop không hợp lệ (<= 0 px).")

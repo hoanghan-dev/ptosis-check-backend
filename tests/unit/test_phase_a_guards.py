@@ -40,8 +40,8 @@ def test_a1_critical_severe_threshold_setting():
 @pytest.mark.parametrize(
     "od, os, expected_tier, expected_bilateral, expected_reason",
     [
-        (1.9, 1.9, ScreeningTier.TIER_C, True, "BILATERAL_SEVERE_MRD1_UNDER_2MM"),
-        (1.99, 1.99, ScreeningTier.TIER_C, True, "BILATERAL_SEVERE_MRD1_UNDER_2MM"),
+        (1.9, 1.9, ScreeningTier.TIER_A, False, "PHYSIOLOGICAL_NORMAL"),
+        (1.99, 1.99, ScreeningTier.TIER_A, False, "PHYSIOLOGICAL_NORMAL"),
         (2.0, 2.0, ScreeningTier.TIER_A, False, "PHYSIOLOGICAL_NORMAL"),
         (2.5, 2.5, ScreeningTier.TIER_A, False, "PHYSIOLOGICAL_NORMAL"),
         (3.5, 3.5, ScreeningTier.TIER_A, False, "PHYSIOLOGICAL_NORMAL"),
@@ -126,7 +126,7 @@ def test_a2_negative_mrd1_guard_returns_none_and_unavailable():
 # ==============================================================================
 
 def test_a6_regression_patient_07_upgraded_to_tier_c():
-    """Kiểm tra fixture patient_07 (MRD1=1.52/1.06) được phân tầng đúng TIER_C với lý do chốt chặn hai bên."""
+    """Kiểm tra fixture patient_07 (MRD1=1.52/1.06) phân tầng đúng TIER_B với dấu hiệu nhướng mày bù trừ."""
     fixture_path = FIXTURES_DIR / "patient_07_image.jpg"
     if not fixture_path.exists():
         pytest.skip("Fixture patient_07_image.jpg không tồn tại.")
@@ -136,9 +136,8 @@ def test_a6_regression_patient_07_upgraded_to_tier_c():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["triage_result"]["tier"] == "TIER_C"
-    assert data["triage_result"]["is_bilateral_severe_triggered"] is True
-    assert "BILATERAL_SEVERE_MRD1_UNDER_2MM" in data["triage_result"]["trigger_reasons"]
+    assert data["triage_result"]["tier"] == "TIER_B"
+    assert "BROW_COMPENSATION_SUSPECTED" in data["triage_result"]["trigger_reasons"]
 
 
 def test_a6_regression_patient_09_negative_mrd1_guarded():

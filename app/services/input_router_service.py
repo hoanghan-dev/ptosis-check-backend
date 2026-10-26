@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from app.utils.mediapipe_lock import mediapipe_lock
+
 _ROUTER_FACE_MESH_INIT_ERROR: Optional[str] = None
 try:
     import mediapipe as mp
@@ -93,7 +95,8 @@ def classify_input_image(image_bgr: np.ndarray) -> Tuple[InputType, Dict[str, An
     # -------------------------------------------------------------------------
     # GIAI ĐOẠN 1: Probe Toàn Khuôn Mặt (Full-Face Direct Probe)
     # -------------------------------------------------------------------------
-    res_direct = _ROUTER_FACE_MESH.process(rgb_image)
+    with mediapipe_lock:
+        res_direct = _ROUTER_FACE_MESH.process(rgb_image)
     if res_direct.multi_face_landmarks and len(res_direct.multi_face_landmarks) > 0:
         face_lms = res_direct.multi_face_landmarks[0].landmark
         if len(face_lms) >= 478:
@@ -121,7 +124,8 @@ def classify_input_image(image_bgr: np.ndarray) -> Tuple[InputType, Dict[str, An
         canvas[yo:yo + h, xo:xo + w] = image_bgr
 
         canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        res_canvas = _ROUTER_FACE_MESH.process(canvas_rgb)
+        with mediapipe_lock:
+            res_canvas = _ROUTER_FACE_MESH.process(canvas_rgb)
 
         if res_canvas.multi_face_landmarks and len(res_canvas.multi_face_landmarks) > 0:
             c_lms = res_canvas.multi_face_landmarks[0].landmark
@@ -140,6 +144,13 @@ def classify_input_image(image_bgr: np.ndarray) -> Tuple[InputType, Dict[str, An
 
                 # Mắt phải (OD) phải nằm ở phía bên trái ảnh người quan sát (x_od < x_os)
                 if od_inside and os_inside and x_od < x_os:
+                    landmarks_px = [
+                        [
+                            float(lm.x) * float(cw_eff) - float(xo),
+                            float(lm.y) * float(ch_eff) - float(yo),
+                        ]
+                        for lm in c_lms
+                    ]
                     return InputType.DUAL_EYE_CROP, {
                         "method": "CANVAS_INJECTION",
                         "canvas_config": label,
@@ -148,6 +159,7 @@ def classify_input_image(image_bgr: np.ndarray) -> Tuple[InputType, Dict[str, An
                         "iris_os": [round(float(x_os), 1), round(float(y_os), 1)],
                         "canvas_shape": [cw_eff, ch_eff],
                         "canvas_offset": [xo, yo],
+                        "canvas_landmarks": landmarks_px,
                     }
 
     # -------------------------------------------------------------------------

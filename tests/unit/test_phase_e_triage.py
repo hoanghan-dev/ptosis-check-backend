@@ -124,7 +124,7 @@ def test_triage_diffuse_lighting_one_eye_indeterminate():
 
 
 def test_triage_bilateral_severe_mrd1_under_2mm():
-    """Kiểm tra chốt chặn an toàn hai mắt: cả 2 mắt < 2.0 mm -> TIER_C bất kể delta_MRD1."""
+    """Kiểm tra đối xứng sinh lý 1.8mm/1.9mm xếp vào TIER_A theo nguyên tắc ưu tiên bất đối xứng."""
     result = evaluate_triage(
         od_mrd1_mm=1.8,
         os_mrd1_mm=1.9,
@@ -134,9 +134,9 @@ def test_triage_bilateral_severe_mrd1_under_2mm():
         reflex_visibility_os=ReflexVisibilityEnum.VISIBLE,
     )
 
-    assert result.tier == ScreeningTier.TIER_C
-    assert "BILATERAL_SEVERE_MRD1_UNDER_2MM" in result.trigger_reasons
-    assert result.is_bilateral_severe_triggered is True
+    assert result.tier == ScreeningTier.TIER_A
+    assert "PHYSIOLOGICAL_NORMAL" in result.trigger_reasons
+    assert result.is_bilateral_severe_triggered is False
 
 
 def test_triage_unilateral_severe_mrd1_under_1mm():

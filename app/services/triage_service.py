@@ -2,18 +2,17 @@
 Dịch vụ Phân tầng Nguy cơ Ưu tiên Bất đối xứng (Module M7: Enhanced Asymmetry-First Triage Engine).
 Triển khai cây quyết định lâm sàng 3 mức (TIER_A, TIER_B, TIER_C) dựa trên:
 - Ngoại lệ chốt chặn an toàn (Fail-Safe Overrides):
-  + Bờ mi che lấp trục thị giác / che lấp phản quang (OCCLUDED_BY_LID) -> Mức C.
-  + Chốt chặn an toàn hai mắt: min(MRD1) < 2.0 mm (bất kể delta_MRD1 per FR-023 / Q-03) -> Mức C.
-  + Sụp mi nặng che lấp trục nhìn một mắt: min(MRD1) < 1.0 mm -> Mức C.
+  + Bờ mi che lấp trục thị giác / che lấp phản quang (OCCLUDED_BY_LID hoặc MRD1 <= 0) -> Mức C.
+  + Sụp mi nặng che lấp trục nhìn cực hạn ở một hoặc hai mắt: min(MRD1) < 1.0 mm -> Mức C.
   + Thiếu phản quang do chất lượng ảnh / thiếu flash (NOT_VISIBLE_QUALITY / INDETERMINATE):
     Không tự động gán TIER_C (tránh báo động giả per Risk 4 / Payload 5) -> Mức B (khuyến nghị chụp lại có flash).
 - Căn cứ ưu tiên cao nhất (Bất đối xứng hai bên delta_MRD1):
   + Tiêu chí ưu tiên: delta_MRD1 > 2.0 mm -> Mức C (lúc này mới xét chi tiết MRD1 2 mắt để phân định mức độ).
   + Tiêu chí ranh giới: 1.5 mm < delta_MRD1 <= 2.0 mm HOẶC delta_Brow > 8.0 px -> Mức B.
-  + Sinh lý bình thường: delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 2.0 mm -> Mức A.
+  + Sinh lý bình thường: delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 1.0 mm -> Mức A (hoặc Mức B nếu nhướng mày bù trừ).
 
 Tuân thủ tuyệt đối:
-- G3 (Asymmetry-First & Bilateral Fail-Safe)
+- G3 (Asymmetry-First Priority & Clinical Fail-Safe)
 - G4 (Non-Diagnostic Safety: Tuyệt đối không dùng từ ngữ thuộc danh mục cấm)
 """
 
@@ -116,27 +115,26 @@ def evaluate_triage(
             else:
                 is_lid_occluded_od = True
 
-    is_any_lid_occluded = is_lid_occluded_od or is_lid_occluded_os
+    # Ngoại lệ lập tức để mức C: bờ mi che lấp reflex hoặc MRD1 âm / bằng 0
+    is_any_lid_occluded = is_lid_occluded_od or is_lid_occluded_os or (min_mrd1 is not None and min_mrd1 <= 0.0)
 
     # =========================================================================
     # GIAI ĐOẠN 0: NGOẠI LỆ CHỐT CHẶN AN TOÀN TUYỆT ĐỐI (FAIL-SAFE OVERRIDE)
     # =========================================================================
 
     # -------------------------------------------------------------------------
-    # Ngoại lệ 0.1: Bờ mi che lấp hoàn toàn phản quang / trục thị giác -> MỨC C
+    # Ngoại lệ 0.1: Bờ mi che lấp hoàn toàn phản quang / trục thị giác (MRD1 <= 0 hoặc OCCLUDED) -> MỨC C
     # -------------------------------------------------------------------------
     if is_any_lid_occluded:
         trigger_reasons = ["REFLEX_OCCLUDED_SEVERE"]
         is_brow_compensation = delta_brow_px > settings.BROW_ASYMMETRY_THRESHOLD_PX
 
-        # Nếu chỉ bị che một bên mắt -> gắn cờ bất đối xứng trục thị giác
         if is_lid_occluded_od != is_lid_occluded_os:
             trigger_reasons.append("UNILATERAL_VISUAL_AXIS_OBSTRUCTION")
 
         if is_brow_compensation:
             trigger_reasons.append("BROW_COMPENSATION_SUSPECTED")
 
-        # Soạn thảo mô tả y sinh chi tiết theo mắt bị che phủ (khớp Payload 3)
         if is_lid_occluded_od and not is_lid_occluded_os:
             comp_suffix = ", kèm dấu hiệu nhướng cung mày bù trừ rõ rệt." if is_brow_compensation else "."
             desc = (
@@ -178,7 +176,6 @@ def evaluate_triage(
 
     # -------------------------------------------------------------------------
     # Ngoại lệ 0.2: Mất phản quang do chất lượng chụp / thiếu flash (Risk 4 / Payload 5) -> MỨC B
-    # Tuyệt đối không tự tiện quy kết TIER_C khi không có bằng chứng che lấp bờ mi.
     # -------------------------------------------------------------------------
     is_quality_od = (
         reflex_visibility_od in [ReflexVisibilityEnum.NOT_VISIBLE_QUALITY, ReflexVisibilityEnum.INDETERMINATE]
@@ -190,7 +187,6 @@ def evaluate_triage(
     )
 
     if is_quality_od and is_quality_os:
-        # Cả hai mắt đều mất phản quang do điều kiện chiếu sáng thiếu flash
         desc = (
             "Không phát hiện điểm phản xạ ánh sáng trên giác mạc ở cả hai mắt do thiếu sáng hoặc "
             "không có ánh đèn trực diện, bờ mi vẫn ở vị trí bình thường."
@@ -215,7 +211,6 @@ def evaluate_triage(
         )
 
     if is_quality_od or is_quality_os:
-        # Một mắt không xác định được phản quang rõ ràng do góc chụp/ánh sáng
         desc = (
             "Một bên mắt không xác định được phản quang rõ ràng do góc sáng hoặc thiếu tương phản. "
             "Mắt còn lại ở giới hạn ghi nhận được."
@@ -239,10 +234,19 @@ def evaluate_triage(
         )
 
     # -------------------------------------------------------------------------
-    # Ngoại lệ 0.3: Chốt chặn an toàn hai mắt (Bilateral Fail-Safe: cả 2 mắt < 2.0 mm per FR-023 / Q-03)
+    # Ngoại lệ 0.3: Sụp mi nặng che lấp trục nhìn cực hạn (< 1.0 mm hoặc cả 2 mắt < 1.5 mm) -> MỨC C
     # -------------------------------------------------------------------------
-    critical_threshold = getattr(settings, "CRITICAL_SEVERE_MRD1_MM", 2.0)
-    if od_val is not None and os_val is not None and od_val < critical_threshold and os_val < critical_threshold:
+    is_bilateral_severe = bool(
+        od_val is not None
+        and os_val is not None
+        and (
+            (od_val < 1.0 and os_val < 1.0)
+            or (od_val < 1.5 and os_val < 1.5 and delta_mrd1_mm is not None and delta_mrd1_mm <= 1.5)
+        )
+    )
+
+    if is_bilateral_severe:
+        reason = "BILATERAL_SEVERE_MRD1_UNDER_1MM" if (od_val < 1.0 and os_val < 1.0) else "BILATERAL_SEVERE_MRD1_UNDER_2MM"
         flags = TriageFlags(
             is_bilateral_severe_triggered=True,
             is_brow_compensation_detected=False,
@@ -250,7 +254,7 @@ def evaluate_triage(
         )
         return TriageResult(
             tier=ScreeningTier.TIER_C,
-            trigger_reasons=["BILATERAL_SEVERE_MRD1_UNDER_2MM"],
+            trigger_reasons=[reason],
             description_vi=DESCRIPTION_TIER_C,
             recommendation_vi=RECOMMENDATION_TIER_C,
             safety_disclaimer_vi=SAFETY_DISCLAIMER_VI,
@@ -258,9 +262,6 @@ def evaluate_triage(
             flags=flags,
         )
 
-    # -------------------------------------------------------------------------
-    # Ngoại lệ 0.4: Một mắt sụp mi nặng che lấp trục nhìn (< 1.0 mm)
-    # -------------------------------------------------------------------------
     if min_mrd1 is not None and min_mrd1 < 1.0:
         flags = TriageFlags(
             is_bilateral_severe_triggered=False,
@@ -334,10 +335,51 @@ def evaluate_triage(
         )
 
     # =========================================================================
-    # GIAI ĐOẠN 2: ĐỐI XỨNG SINH LÝ BÌNH THƯỜNG (delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 2.0 mm) -> MỨC A
-    # Ưu tiên cao nhất: Khi hai mắt đối xứng sinh lý (delta <= 1.5mm) thì luôn là Mức A,
-    # độ chênh lệch chân mày tự nhiên không làm tăng bậc phân tầng.
+    # GIAI ĐOẠN 2: ĐỐI XỨNG SINH LÝ (delta_MRD1 <= 1.5 mm VÀ min(MRD1) >= 1.0 mm)
+    # Ưu tiên cao nhất: Khi hai mắt đối xứng sinh lý (như trường hợp delta=0.26mm, OD=1.49, OS=1.75 ở Ảnh 3) -> MỨC A.
+    # Nếu có dấu hiệu sụp mi ranh giới (min(MRD1) < 2.0 mm) KÈM nhướng mày bù trừ rõ rệt (delta_brow > 8px)
+    # -> Xếp vào MỨC B (BROW_COMPENSATION_SUSPECTED).
+    # Ngược lại, nếu mi mở tốt (min >= 2.0 mm) hoặc không nhướng mày -> Luôn là MỨC A (PHYSIOLOGICAL_NORMAL).
     # =========================================================================
+    # Sụp mi hai bên ranh giới (Borderline Bilateral Droop):
+    # Cả hai mắt đều mở thấp (< 1.8 mm) với min(MRD1) < 1.6 mm dù đối xứng -> MỨC B (tránh bỏ sót)
+    is_bilateral_borderline = bool(
+        min_mrd1 is not None
+        and min_mrd1 < 1.6
+        and od_val is not None
+        and od_val < 1.8
+        and os_val is not None
+        and os_val < 1.8
+    )
+
+    is_brow_comp_with_droop = (
+        delta_brow_px > settings.BROW_ASYMMETRY_THRESHOLD_PX
+        and min_mrd1 is not None
+        and min_mrd1 < settings.ABSOLUTE_SEVERE_MRD1_MM
+    )
+
+    if is_bilateral_borderline or is_brow_comp_with_droop:
+        reasons = []
+        if is_bilateral_borderline:
+            reasons.append("BORDERLINE_BILATERAL_LOW_MRD1")
+        if is_brow_comp_with_droop:
+            reasons.append("BROW_COMPENSATION_SUSPECTED")
+
+        flags = TriageFlags(
+            is_bilateral_severe_triggered=False,
+            is_brow_compensation_detected=is_brow_comp_with_droop,
+            is_pupil_fallback_used=is_pupil_fallback_used,
+        )
+        return TriageResult(
+            tier=ScreeningTier.TIER_B,
+            trigger_reasons=reasons,
+            description_vi=DESCRIPTION_TIER_B,
+            recommendation_vi=RECOMMENDATION_TIER_B,
+            safety_disclaimer_vi=SAFETY_DISCLAIMER_VI,
+            is_bilateral_severe_triggered=False,
+            flags=flags,
+        )
+
     flags = TriageFlags(
         is_bilateral_severe_triggered=False,
         is_brow_compensation_detected=False,

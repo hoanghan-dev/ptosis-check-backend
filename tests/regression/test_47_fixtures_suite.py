@@ -114,10 +114,10 @@ def test_12_baseline_pass_fixtures_zero_regression(filename: str):
     assert "triage_result" in data
     assert data["triage_result"]["tier"] in ["TIER_A", "TIER_B", "TIER_C"]
 
-    # Kiểm tra đặc biệt cho 2 ca bug cũ đã sửa tại Phase A & E:
+    # Kiểm tra đặc biệt cho 2 ca bug cũ đã sửa:
     if filename == "patient_07_image.jpg":
-        assert data["triage_result"]["tier"] == "TIER_C"
-        assert "BILATERAL_SEVERE_MRD1_UNDER_2MM" in data["triage_result"]["trigger_reasons"]
+        assert data["triage_result"]["tier"] == "TIER_B"
+        assert "BROW_COMPENSATION_SUSPECTED" in data["triage_result"]["trigger_reasons"]
 
     if filename == "patient_09_image.jpg":
         assert data["triage_result"]["tier"] == "TIER_C"

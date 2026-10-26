@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from app.core.config import settings
 from app.services.quality_gate_service import estimate_head_pose_3d
+from app.utils.mediapipe_lock import mediapipe_lock
 
 # Khởi tạo singleton MediaPipe FaceMesh probe trong bộ nhớ
 _PROBE_FACE_MESH = None
@@ -115,7 +116,8 @@ def decode_and_orient_image(contents: bytes) -> Tuple[Optional[np.ndarray], Dict
     def _evaluate_candidate(img: np.ndarray) -> Tuple[bool, Optional[float], float]:
         """Đánh giá tư thế đầu và góc nghiêng khóe mắt của một ảnh ứng viên."""
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        res = _PROBE_FACE_MESH.process(rgb)
+        with mediapipe_lock:
+            res = _PROBE_FACE_MESH.process(rgb)
         if not res.multi_face_landmarks:
             return False, None, float("inf")
 

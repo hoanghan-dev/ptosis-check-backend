@@ -30,6 +30,7 @@ except Exception as e:
 
 from app.core.config import settings
 from app.utils.geometry import euclidean_distance
+from app.utils.mediapipe_lock import mediapipe_lock
 
 # Mốc mống mắt (Iris landmarks)
 LANDMARK_IRIS_CENTER_OD = 468
@@ -93,7 +94,8 @@ def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
 
     height, width = image_bgr.shape[:2]
     rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    results = _LANDMARK_FACE_MESH.process(rgb_image)
+    with mediapipe_lock:
+        results = _LANDMARK_FACE_MESH.process(rgb_image)
 
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0:
         raise ValueError("Không phát hiện được khuôn mặt trong ảnh.")

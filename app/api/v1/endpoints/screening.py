@@ -289,6 +289,36 @@ async def analyze_eye_image(
             or margin_os.margin_point[1] >= landmarks.iris_center_os[1]
         )
 
+        # Unilateral Occlusion Guard: Khi có flash ở một mắt nhưng mắt kia mất phản quang và có dấu hiệu sụp hẹp khe mi rõ rệt
+        pfh_od_px = abs(landmarks.lower_eyelid_od[4][1] - margin_od.margin_point[1])
+        pfh_os_px = abs(landmarks.lower_eyelid_os[4][1] - margin_os.margin_point[1])
+        pfh_od_mm = pfh_od_px * landmarks.scale_factor_od
+        pfh_os_mm = pfh_os_px * landmarks.scale_factor_os
+
+        if (
+            not is_occluded_od
+            and reflex_od.status == ReflexDetectionStatus.NO_REFLEX_FOUND
+            and reflex_os.status == ReflexDetectionStatus.SUCCESS
+        ):
+            if (
+                pfh_od_mm < 5.0
+                or (pfh_os_mm > 0 and pfh_od_mm / pfh_os_mm <= 0.65)
+                or margin_od.margin_point[1] >= (landmarks.iris_center_od[1] - 0.25 * r_iris_od)
+            ):
+                is_occluded_od = True
+
+        if (
+            not is_occluded_os
+            and reflex_os.status == ReflexDetectionStatus.NO_REFLEX_FOUND
+            and reflex_od.status == ReflexDetectionStatus.SUCCESS
+        ):
+            if (
+                pfh_os_mm < 5.0
+                or (pfh_mm_od := pfh_od_mm) > 0 and pfh_os_mm / pfh_mm_od <= 0.65
+                or margin_os.margin_point[1] >= (landmarks.iris_center_os[1] - 0.25 * r_iris_os)
+            ):
+                is_occluded_os = True
+
         if is_occluded_od:
             measurements_container.right_eye_od.reflex_visibility = ReflexVisibilityEnum.OCCLUDED_BY_LID
             measurements_container.right_eye_od.mrd1_mm = None
@@ -357,7 +387,11 @@ async def analyze_eye_image(
             triage_result=triage_result,
             annotated_overlay_coordinates=AnnotatedOverlayContainer(
                 right_eye=EyeAnnotationPoints(
-                    corneal_reflex=None if is_occluded_od else [reflex_od.reflex_point[0], reflex_od.reflex_point[1]],
+                    corneal_reflex=(
+                        [reflex_od.reflex_point[0], reflex_od.reflex_point[1]]
+                        if (not is_occluded_od and reflex_od.status == ReflexDetectionStatus.SUCCESS)
+                        else None
+                    ),
                     pupil_center=None if is_occluded_od else [
                         reflex_od.reflex_point[0] if fallback_type_od == "PUPIL_DETECTOR" else landmarks.iris_center_od[0],
                         reflex_od.reflex_point[1] if fallback_type_od == "PUPIL_DETECTOR" else landmarks.iris_center_od[1],
@@ -370,7 +404,11 @@ async def analyze_eye_image(
                     lower_eyelid_contour=[[pt[0], pt[1]] for pt in landmarks.lower_eyelid_od],
                 ),
                 left_eye=EyeAnnotationPoints(
-                    corneal_reflex=None if is_occluded_os else [reflex_os.reflex_point[0], reflex_os.reflex_point[1]],
+                    corneal_reflex=(
+                        [reflex_os.reflex_point[0], reflex_os.reflex_point[1]]
+                        if (not is_occluded_os and reflex_os.status == ReflexDetectionStatus.SUCCESS)
+                        else None
+                    ),
                     pupil_center=None if is_occluded_os else [
                         reflex_os.reflex_point[0] if fallback_type_os == "PUPIL_DETECTOR" else landmarks.iris_center_os[0],
                         reflex_os.reflex_point[1] if fallback_type_os == "PUPIL_DETECTOR" else landmarks.iris_center_os[1],
