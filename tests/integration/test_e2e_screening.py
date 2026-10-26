@@ -107,3 +107,38 @@ def test_e2e_screening_pipeline_latency_and_contract():
     assert len(coords["right_eye"]["iris_limbus_contour"]) == 2
     assert len(coords["right_eye"]["upper_eyelid_contour"]) > 5
     assert len(coords["left_eye"]["upper_eyelid_contour"]) > 5
+
+
+def test_e2e_screening_dual_eye_crop_pipeline():
+    """Kiểm thử toàn trình cho ảnh crop 2 mắt (Dual-Eye Crop) qua Periocular Pipeline:
+    Xác nhận HTTP 200, độ trễ <= 3.0s, định tuyến đúng DUAL_EYE_CROP và cờ PROCESSED_VIA_PERIOCULAR_PIPELINE.
+    """
+    fixtures_dir = SAMPLE_IMAGE_PATH.parent
+    crop_fixture = fixtures_dir / "crop_eye_normal_sample.jpg"
+    if not crop_fixture.exists():
+        pytest.skip("Không tìm thấy tệp ảnh crop_eye_normal_sample.jpg.")
+
+    with open(crop_fixture, "rb") as f:
+        image_bytes = f.read()
+
+    start_time = time.perf_counter()
+    response = client.post(
+        "/api/v1/screening/analyze",
+        files={"file": ("crop_eye_normal_sample.jpg", image_bytes, "image/jpeg")},
+    )
+    elapsed_time = time.perf_counter() - start_time
+
+    assert response.status_code == 200, f"Crop pipeline thất bại: {response.status_code} - {response.text}"
+    assert elapsed_time <= 3.0, f"Thời gian xử lý crop ({elapsed_time:.2f}s) vượt quá 3.0s!"
+
+    data = response.json()
+    audit = data["image_quality_audit"]
+    assert audit["passed"] is True
+    assert audit["audit_details"]["input_type"] == "DUAL_EYE_CROP"
+
+    od_meas = data["measurements"]["right_eye_od"]
+    os_meas = data["measurements"]["left_eye_os"]
+    assert "PROCESSED_VIA_PERIOCULAR_PIPELINE" in od_meas["warning_flags"]
+    assert "PROCESSED_VIA_PERIOCULAR_PIPELINE" in os_meas["warning_flags"]
+    assert data["triage_result"]["tier"] in ["TIER_A", "TIER_B", "TIER_C"]
+

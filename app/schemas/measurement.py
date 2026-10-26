@@ -5,10 +5,27 @@ và Mục 9.1 của 06-system-architecture.md.
 Tuyệt đối tuân thủ G4: Phi can thiệp y tế chuyên sâu.
 """
 
+from enum import Enum
 from typing import List, Optional, Tuple, Dict, Any, Union
 from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.triage import TriageResult
 from app.schemas.quality import PoseAudit
+
+
+class MeasurementStatusEnum(str, Enum):
+    VALID = "VALID"
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+    INVALID = "INVALID"
+    NOT_DETECTABLE = "NOT_DETECTABLE"
+    MEASUREMENT_UNAVAILABLE = "MEASUREMENT_UNAVAILABLE"
+    INDETERMINATE = "INDETERMINATE"
+
+
+class ReflexVisibilityEnum(str, Enum):
+    VISIBLE = "VISIBLE"
+    OCCLUDED_BY_LID = "OCCLUDED_BY_LID"
+    NOT_VISIBLE_QUALITY = "NOT_VISIBLE_QUALITY"
+    INDETERMINATE = "INDETERMINATE"
 
 
 class PointCoordinates(BaseModel):
@@ -24,6 +41,7 @@ class ImageQualityAudit(BaseModel):
     pose: PoseAudit
     sharpness_score: float
     mean_illumination: float
+    audit_details: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -45,17 +63,18 @@ class ScaleReference(BaseModel):
 
 
 class SingleEyeMeasurement(BaseModel):
-    mrd1_px: float
-    mrd1_mm: float
-    mrd1_estimated_range: str
+    mrd1_px: Optional[float] = None
+    mrd1_mm: Optional[float] = None
+    mrd1_estimated_range: Optional[str] = None
     pfh_px: Optional[float] = None
     pfh_mm: Optional[float] = None
     reference_point_used: str = "CORNEAL_LIGHT_REFLEX"
     reference_coordinates: Optional[PointCoordinates] = None
     eyelid_margin_point: Optional[PointCoordinates] = None
-    status: str = "VALID"
+    status: MeasurementStatusEnum = MeasurementStatusEnum.VALID
     confidence_score: float = 1.0
     warning_flags: List[str] = Field(default_factory=list)
+    reflex_visibility: ReflexVisibilityEnum = ReflexVisibilityEnum.VISIBLE
     # Các trường mở rộng từ V2 (Optional - tương thích ngược G5)
     glint_aspect_ratio: Optional[float] = None
     pupil_diameter_px: Optional[float] = None
@@ -72,8 +91,8 @@ class MeasurementsContainer(BaseModel):
 
 
 class BilateralComparison(BaseModel):
-    delta_mrd1_mm: float
-    signed_delta_mrd1_mm: float
+    delta_mrd1_mm: Optional[float] = None
+    signed_delta_mrd1_mm: Optional[float] = None
     asymmetry_classification: str
     delta_pfh_mm: Optional[float] = None
     delta_brow_px: Optional[float] = None
@@ -83,7 +102,7 @@ class BilateralComparison(BaseModel):
 
 
 class EyeAnnotationPoints(BaseModel):
-    corneal_reflex: List[float] = Field(..., description="[x, y] phản quang")
+    corneal_reflex: Optional[List[float]] = Field(default=None, description="[x, y] phản quang")
     pupil_center: Optional[List[float]] = Field(default=None, description="[x, y] tâm mống mắt/đồng tử")
     iris_limbus_contour: List[List[float]] = Field(default_factory=list, description="Danh sách các điểm viền mống mắt")
     upper_eyelid_contour: List[List[float]] = Field(default_factory=list, description="Danh sách các điểm bờ mi trên")

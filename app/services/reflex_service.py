@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
+from app.schemas.measurement import ReflexVisibilityEnum
 
 
 class ReflexDetectionStatus(str, Enum):
@@ -45,6 +46,7 @@ class ReflexResult:
     glint_area_px: Optional[int] = None
     glint_aspect_ratio: Optional[float] = None
     warning_flags: List[str] = field(default_factory=list)
+    reflex_visibility: ReflexVisibilityEnum = ReflexVisibilityEnum.VISIBLE
 
 
 def detect_corneal_reflex(
@@ -83,6 +85,7 @@ def detect_corneal_reflex(
             has_fallback=True,
             status=ReflexDetectionStatus.NO_REFLEX_FOUND,
             warning_flags=["REFLEX_FALLBACK_TO_PUPIL", "INVALID_IRIS_RADIUS"],
+            reflex_visibility=ReflexVisibilityEnum.NOT_VISIBLE_QUALITY,
         )
 
     height, width = image_gray.shape[:2]
@@ -101,6 +104,7 @@ def detect_corneal_reflex(
             has_fallback=True,
             status=ReflexDetectionStatus.NO_REFLEX_FOUND,
             warning_flags=["REFLEX_FALLBACK_TO_PUPIL", "ROI_OUT_OF_BOUNDS"],
+            reflex_visibility=ReflexVisibilityEnum.NOT_VISIBLE_QUALITY,
         )
 
     roi = image_gray[y1:y2, x1:x2].astype(np.float32)
@@ -126,6 +130,7 @@ def detect_corneal_reflex(
             has_fallback=True,
             status=ReflexDetectionStatus.NO_REFLEX_FOUND,
             warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
+            reflex_visibility=ReflexVisibilityEnum.NOT_VISIBLE_QUALITY,
         )
 
     # 2. Tìm đốm sáng cực đại: I(x, y) >= Percentile_95 VÀ I(x, y) >= 230
@@ -211,6 +216,7 @@ def detect_corneal_reflex(
             has_fallback=True,
             status=ReflexDetectionStatus.NO_REFLEX_FOUND,
             warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
+            reflex_visibility=ReflexVisibilityEnum.NOT_VISIBLE_QUALITY,
         )
 
     # Sắp xếp danh sách ứng viên theo điểm số tăng dần (điểm thấp nhất = tối ưu nhất)
@@ -276,6 +282,7 @@ def detect_corneal_reflex(
             has_fallback=True,
             status=ReflexDetectionStatus.NO_REFLEX_FOUND,
             warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
+            reflex_visibility=ReflexVisibilityEnum.NOT_VISIBLE_QUALITY,
         )
 
     xs = global_x[chosen_mask]
@@ -290,6 +297,7 @@ def detect_corneal_reflex(
         confidence_score=settings.PURKINJE_NORMAL_CONFIDENCE,
         has_fallback=False,
         status=ReflexDetectionStatus.SUCCESS,
+        reflex_visibility=ReflexVisibilityEnum.VISIBLE,
         glint_intensity=round(chosen_peak, 2),
         glint_area_px=chosen_area,
         glint_aspect_ratio=round(chosen_aspect, 2),

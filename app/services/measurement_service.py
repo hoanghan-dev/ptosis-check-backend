@@ -19,8 +19,10 @@ import numpy as np
 from app.core.config import settings
 from app.schemas.measurement import (
     BilateralComparison,
+    MeasurementStatusEnum,
     MeasurementsContainer,
     PointCoordinates,
+    ReflexVisibilityEnum,
     SingleEyeMeasurement,
 )
 from app.services.eyelid_margin_service import MarginResult
@@ -77,14 +79,14 @@ def _calculate_single_eye_confidence(
     return round(float(np.clip(composite_score, 0.0, 1.0)), 2)
 
 
-def _determine_measurement_status(confidence_score: float) -> str:
+def _determine_measurement_status(confidence_score: float) -> MeasurementStatusEnum:
     """Xác định trạng thái phép đo dựa trên điểm tin cậy."""
     if confidence_score >= settings.CONFIDENCE_VALID_THRESHOLD:
-        return "VALID"
+        return MeasurementStatusEnum.VALID
     elif confidence_score >= settings.CONFIDENCE_LOW_THRESHOLD:
-        return "LOW_CONFIDENCE"
+        return MeasurementStatusEnum.LOW_CONFIDENCE
     else:
-        return "INVALID"
+        return MeasurementStatusEnum.INVALID
 
 
 def compute_measurements(
@@ -192,58 +194,58 @@ def compute_measurements(
 
     # Quy ước dấu: Y tăng dần từ trên xuống dưới
     # Bờ mi trên ở phía trên phản quang (y_margin < y_ref) -> MRD1 > 0
-    mrd1_px_od = y_ref_od - y_margin_od
-    mrd1_mm_od = mrd1_px_od * scale_od
-
+    raw_mrd1_px_od = y_ref_od - y_margin_od
     tol = settings.NOMINAL_TOLERANCE_MM
-    range_od = f"{mrd1_mm_od - tol:.1f} - {mrd1_mm_od + tol:.1f} mm"
-    pfh_mm_od = pfh_px_od * scale_od
 
-    # Điểm tin cậy tổng hợp OD
-    conf_od = _calculate_single_eye_confidence(
-        sharpness_score=sharpness_score,
-        c_bo_mi=conf_margin_od,
-        c_phan_quang=conf_reflex_od,
-        is_hvid_consistent=is_hvid_consistent,
-        hvid_asymmetry_ratio=hvid_asymmetry_ratio,
-    )
-    status_od = _determine_measurement_status(conf_od)
+    flags_od = list(dict.fromkeys(landmarks.warning_flags + reflex_od.warning_flags + margin_od.warning_flags))
 
-    flags_od = list(dict.fromkeys(flags_scale + flags_reflex_od + flags_margin_od))
+    # Chiều cao khe mi PFH
+    y_lower_od = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_od, x_ref_od)
+    pfh_px_od = max(0.0, y_lower_od - y_margin_od)
+    pfh_mm_od = pfh_px_od * landmarks.scale_factor_od
 
-    # Chốt chặn kiểm tra ngưỡng sinh lý lâm sàng và hình thái học
-    if mrd1_mm_od > PHYSIOLOGICAL_MRD1_MAX_MM or mrd1_mm_od < PHYSIOLOGICAL_MRD1_MIN_MM:
-        flags_od.append("PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1")
-        conf_od = min(conf_od, 0.49)
-        status_od = "LOW_CONFIDENCE"
+    if raw_mrd1_px_od < 0:
+        # Chốt chặn dấu MRD1 âm (Phase A - A2)
+        mrd1_px_od = None
+        mrd1_mm_od = None
+        range_od = None
+        status_od = MeasurementStatusEnum.MEASUREMENT_UNAVAILABLE
+        conf_od = 0.0
+        ref_coords_od = None
+        reflex_vis_od = ReflexVisibilityEnum.OCCLUDED_BY_LID
+        if "ANATOMICAL_NEGATIVE_SUSPECTED" not in flags_od:
+            flags_od.append("ANATOMICAL_NEGATIVE_SUSPECTED")
+    else:
+        mrd1_px_od = round(raw_mrd1_px_od, 2)
+        mrd1_mm_od = round(raw_mrd1_px_od * landmarks.scale_factor_od, 2)
+        range_od = f"{mrd1_mm_od - tol:.1f} - {mrd1_mm_od + tol:.1f} mm"
 
-    if y_ref_od > y_lower_od:
-        flags_od.append("REFLEX_BELOW_LOWER_MARGIN")
-        conf_od = min(conf_od, 0.40)
-        status_od = "LOW_CONFIDENCE"
-
-    if iris_od is not None and iris_od.hvid_px < 20.0:
-        flags_od.append("HVID_SCALE_IMPLAUSIBLY_SMALL")
-        conf_od = min(conf_od, 0.45)
-        status_od = "LOW_CONFIDENCE"
-
-    if status_od == "LOW_CONFIDENCE" and "LOW_MEASUREMENT_CONFIDENCE" not in flags_od:
-        flags_od.append("LOW_MEASUREMENT_CONFIDENCE")
+        conf_od = _calculate_single_eye_confidence(
+            sharpness_score=sharpness_score,
+            margin_res=margin_od,
+            reflex_res=reflex_od,
+            is_hvid_consistent=landmarks.is_hvid_biologically_consistent,
+            hvid_asymmetry_ratio=landmarks.hvid_asymmetry_ratio,
+        )
+        status_od = _determine_measurement_status(conf_od)
+        if status_od == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_od:
+            flags_od.append("LOW_MEASUREMENT_CONFIDENCE")
+        ref_coords_od = PointCoordinates(x=x_ref_od, y=y_ref_od)
+        reflex_vis_od = getattr(reflex_od, "reflex_visibility", ReflexVisibilityEnum.VISIBLE)
 
     single_od = SingleEyeMeasurement(
-        mrd1_px=round(mrd1_px_od, 2),
-        mrd1_mm=round(mrd1_mm_od, 2),
+        mrd1_px=mrd1_px_od,
+        mrd1_mm=mrd1_mm_od,
         mrd1_estimated_range=range_od,
         pfh_px=round(pfh_px_od, 2),
         pfh_mm=round(pfh_mm_od, 2),
-        reference_point_used=ref_used_od,
-        reference_coordinates=PointCoordinates(x=x_ref_od, y=y_ref_od),
-        eyelid_margin_point=PointCoordinates(x=x_margin_od, y=y_margin_od),
+        reference_point_used=reflex_od.reference_point_used,
+        reference_coordinates=ref_coords_od,
+        eyelid_margin_point=PointCoordinates(x=margin_od.margin_point[0], y=y_margin_od),
         status=status_od,
         confidence_score=conf_od,
         warning_flags=flags_od,
-        glint_aspect_ratio=glint_aspect_od,
-        fallback_type=fallback_type_od,
+        reflex_visibility=reflex_vis_od,
     )
 
     # -------------------------------------------------------------------------
@@ -297,55 +299,55 @@ def compute_measurements(
         conf_margin_os = 0.90
         flags_margin_os = []
 
-    mrd1_px_os = y_ref_os - y_margin_os
-    mrd1_mm_os = mrd1_px_os * scale_os
-    range_os = f"{mrd1_mm_os - tol:.1f} - {mrd1_mm_os + tol:.1f} mm"
-    pfh_mm_os = pfh_px_os * scale_os
+    raw_mrd1_px_os = y_ref_os - y_margin_os
+    flags_os = list(dict.fromkeys(landmarks.warning_flags + reflex_os.warning_flags + margin_os.warning_flags))
 
-    conf_os = _calculate_single_eye_confidence(
-        sharpness_score=sharpness_score,
-        c_bo_mi=conf_margin_os,
-        c_phan_quang=conf_reflex_os,
-        is_hvid_consistent=is_hvid_consistent,
-        hvid_asymmetry_ratio=hvid_asymmetry_ratio,
-    )
-    status_os = _determine_measurement_status(conf_os)
+    y_lower_os = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_os, x_ref_os)
+    pfh_px_os = max(0.0, y_lower_os - y_margin_os)
+    pfh_mm_os = pfh_px_os * landmarks.scale_factor_os
 
-    flags_os = list(dict.fromkeys(flags_scale + flags_reflex_os + flags_margin_os))
+    if raw_mrd1_px_os < 0:
+        # Chốt chặn dấu MRD1 âm (Phase A - A2)
+        mrd1_px_os = None
+        mrd1_mm_os = None
+        range_os = None
+        status_os = MeasurementStatusEnum.MEASUREMENT_UNAVAILABLE
+        conf_os = 0.0
+        ref_coords_os = None
+        reflex_vis_os = ReflexVisibilityEnum.OCCLUDED_BY_LID
+        if "ANATOMICAL_NEGATIVE_SUSPECTED" not in flags_os:
+            flags_os.append("ANATOMICAL_NEGATIVE_SUSPECTED")
+    else:
+        mrd1_px_os = round(raw_mrd1_px_os, 2)
+        mrd1_mm_os = round(raw_mrd1_px_os * landmarks.scale_factor_os, 2)
+        range_os = f"{mrd1_mm_os - tol:.1f} - {mrd1_mm_os + tol:.1f} mm"
 
-    # Chốt chặn kiểm tra ngưỡng sinh lý lâm sàng và hình thái học
-    if mrd1_mm_os > PHYSIOLOGICAL_MRD1_MAX_MM or mrd1_mm_os < PHYSIOLOGICAL_MRD1_MIN_MM:
-        flags_os.append("PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1")
-        conf_os = min(conf_os, 0.49)
-        status_os = "LOW_CONFIDENCE"
-
-    if y_ref_os > y_lower_os:
-        flags_os.append("REFLEX_BELOW_LOWER_MARGIN")
-        conf_os = min(conf_os, 0.40)
-        status_os = "LOW_CONFIDENCE"
-
-    if iris_os is not None and iris_os.hvid_px < 20.0:
-        flags_os.append("HVID_SCALE_IMPLAUSIBLY_SMALL")
-        conf_os = min(conf_os, 0.45)
-        status_os = "LOW_CONFIDENCE"
-
-    if status_os == "LOW_CONFIDENCE" and "LOW_MEASUREMENT_CONFIDENCE" not in flags_os:
-        flags_os.append("LOW_MEASUREMENT_CONFIDENCE")
+        conf_os = _calculate_single_eye_confidence(
+            sharpness_score=sharpness_score,
+            margin_res=margin_os,
+            reflex_res=reflex_os,
+            is_hvid_consistent=landmarks.is_hvid_biologically_consistent,
+            hvid_asymmetry_ratio=landmarks.hvid_asymmetry_ratio,
+        )
+        status_os = _determine_measurement_status(conf_os)
+        if status_os == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_os:
+            flags_os.append("LOW_MEASUREMENT_CONFIDENCE")
+        ref_coords_os = PointCoordinates(x=x_ref_os, y=y_ref_os)
+        reflex_vis_os = getattr(reflex_os, "reflex_visibility", ReflexVisibilityEnum.VISIBLE)
 
     single_os = SingleEyeMeasurement(
-        mrd1_px=round(mrd1_px_os, 2),
-        mrd1_mm=round(mrd1_mm_os, 2),
+        mrd1_px=mrd1_px_os,
+        mrd1_mm=mrd1_mm_os,
         mrd1_estimated_range=range_os,
         pfh_px=round(pfh_px_os, 2),
         pfh_mm=round(pfh_mm_os, 2),
-        reference_point_used=ref_used_os,
-        reference_coordinates=PointCoordinates(x=x_ref_os, y=y_ref_os),
-        eyelid_margin_point=PointCoordinates(x=x_margin_os, y=y_margin_os),
+        reference_point_used=reflex_os.reference_point_used,
+        reference_coordinates=ref_coords_os,
+        eyelid_margin_point=PointCoordinates(x=margin_os.margin_point[0], y=y_margin_os),
         status=status_os,
         confidence_score=conf_os,
         warning_flags=flags_os,
-        glint_aspect_ratio=glint_aspect_os,
-        fallback_type=fallback_type_os,
+        reflex_visibility=reflex_vis_os,
     )
 
     measurements_container = MeasurementsContainer(
@@ -356,17 +358,21 @@ def compute_measurements(
     # -------------------------------------------------------------------------
     # 3. SO SÁNH BẤT ĐỐI XỨNG HAI BÊN (BILATERAL COMPARISON)
     # -------------------------------------------------------------------------
-    delta_mrd1_mm = abs(single_os.mrd1_mm - single_od.mrd1_mm)
-    signed_delta_mrd1_mm = single_os.mrd1_mm - single_od.mrd1_mm
-    delta_pfh_mm = abs(single_os.pfh_mm - single_od.pfh_mm)
-
-    # Phân loại đối xứng
-    if delta_mrd1_mm <= settings.PHYSIOLOGICAL_ASYMMETRY_MAX_MM:
-        asymmetry_classification = "PHYSIOLOGICAL_SYMMETRY"
-    elif delta_mrd1_mm <= settings.BORDERLINE_ASYMMETRY_MAX_MM:
-        asymmetry_classification = "BORDERLINE_ASYMMETRY"
+    if mrd1_mm_od is not None and mrd1_mm_os is not None:
+        delta_mrd1_mm = round(abs(mrd1_mm_os - mrd1_mm_od), 2)
+        signed_delta_mrd1_mm = round(mrd1_mm_os - mrd1_mm_od, 2)
+        if delta_mrd1_mm <= settings.PHYSIOLOGICAL_ASYMMETRY_MAX_MM:
+            asymmetry_classification = "PHYSIOLOGICAL_SYMMETRY"
+        elif delta_mrd1_mm <= settings.BORDERLINE_ASYMMETRY_MAX_MM:
+            asymmetry_classification = "BORDERLINE_ASYMMETRY"
+        else:
+            asymmetry_classification = "SIGNIFICANT_ASYMMETRY"
     else:
+        delta_mrd1_mm = None
+        signed_delta_mrd1_mm = None
         asymmetry_classification = "SIGNIFICANT_ASYMMETRY"
+
+    delta_pfh_mm = abs(pfh_mm_os - pfh_mm_od)
 
     # Chênh lệch độ cao cung mày (Eyebrow Height Discrepancy)
     if landmarks is not None and len(landmarks.eyebrow_od) > 2 and len(landmarks.eyebrow_os) > 2:
@@ -379,8 +385,8 @@ def compute_measurements(
         delta_brow_px = 0.0
 
     bilateral_comparison = BilateralComparison(
-        delta_mrd1_mm=round(delta_mrd1_mm, 2),
-        signed_delta_mrd1_mm=round(signed_delta_mrd1_mm, 2),
+        delta_mrd1_mm=delta_mrd1_mm,
+        signed_delta_mrd1_mm=signed_delta_mrd1_mm,
         asymmetry_classification=asymmetry_classification,
         delta_pfh_mm=round(delta_pfh_mm, 2),
         delta_brow_px=round(delta_brow_px, 2),

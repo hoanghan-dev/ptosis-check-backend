@@ -121,7 +121,7 @@ def test_brow_compensation_flag():
 
 def test_user_case_delta_0_6_remains_tier_a():
     """Kiểm tra trường hợp thực tế: delta_MRD1 = 0.6mm (<= 1.5mm) dù delta_brow = 15.0px vẫn phải là Mức A."""
-    res = evaluate_triage(2.22, 1.62, 0.60, delta_brow_px=15.0)
+    res = evaluate_triage(2.82, 2.22, 0.60, delta_brow_px=15.0)
     assert res.tier == ScreeningTier.TIER_A
     assert res.flags.is_brow_compensation_detected is False
     assert "PHYSIOLOGICAL_NORMAL" in res.trigger_reasons
@@ -176,34 +176,21 @@ def test_significant_asymmetry_over_2mm_trigger():
     assert "SIGNIFICANT_ASYMMETRY_OVER_2MM" in res_c.trigger_reasons
 
 
-def test_fail_safe_exception_le_0mm():
-    """Kiểm tra ngoại lệ chốt chặn an toàn: min(MRD1) <= 0.0mm luôn kích hoạt Mức C bất kể delta_MRD1."""
-    # Trường hợp 1: delta = 0.0 mm nhưng cả 2 mắt <= 0.0mm
-    res_bilateral = evaluate_triage(0.0, 0.0, 0.0)
-    assert res_bilateral.tier == ScreeningTier.TIER_C
-    assert res_bilateral.is_bilateral_severe_triggered is True
-    assert "BILATERAL_SEVERE_MRD1_LE_0MM" in res_bilateral.trigger_reasons
+def test_fail_safe_exception_under_2mm():
+    """Kiểm tra phân tầng ưu tiên đối xứng sinh lý Á Đông và chốt chặn cực hạn < 1.0mm."""
+    # Trường hợp 1: delta đối xứng sinh lý (0.1 mm), cả 2 mắt mở >= 1.0mm -> Mức A (ưu tiên đối xứng)
+    res_bilateral = evaluate_triage(1.6, 1.7, 0.1)
+    assert res_bilateral.tier == ScreeningTier.TIER_A
+    assert res_bilateral.is_bilateral_severe_triggered is False
+    assert "PHYSIOLOGICAL_NORMAL" in res_bilateral.trigger_reasons
 
-    # Trường hợp 2: delta = 1.0 mm (<= 1.5 mm) nhưng có 1 mắt <= 0.0mm
-    res_unilateral = evaluate_triage(0.0, 1.0, 1.0)
+    # Trường hợp 2: Có 1 mắt < 1.0mm (che tâm đồng tử) dù delta <= 1.5mm vẫn kích hoạt Mức C
+    res_unilateral = evaluate_triage(0.8, 2.0, 1.2)
     assert res_unilateral.tier == ScreeningTier.TIER_C
-    assert res_unilateral.is_bilateral_severe_triggered is False
-    assert "UNILATERAL_SEVERE_MRD1_LE_0MM" in res_unilateral.trigger_reasons
+    assert "UNILATERAL_SEVERE_MRD1_UNDER_1MM" in res_unilateral.trigger_reasons
 
-    # Trường hợp 3: MRD1 âm (ví dụ -0.5mm do mi che sâu qua phản quang)
-    res_negative = evaluate_triage(-0.5, 0.8, 1.3)
-    assert res_negative.tier == ScreeningTier.TIER_C
-    assert "UNILATERAL_SEVERE_MRD1_LE_0MM" in res_negative.trigger_reasons
-
-
-def test_mrd1_sub_1mm_symmetric_remains_tier_a():
-    """Kiểm tra trường hợp mắt hẹp sinh lý Á Đông (0.0 < MRD1 < 1.0mm) nhưng đối xứng delta <= 1.5mm thì vẫn là Mức A."""
-    # Hai mắt đều 0.8mm, đối xứng tuyệt đối -> Mức A
-    res_symmetric = evaluate_triage(0.8, 0.8, 0.0)
-    assert res_symmetric.tier == ScreeningTier.TIER_A
-    assert "PHYSIOLOGICAL_NORMAL" in res_symmetric.trigger_reasons
-
-    # Một mắt 0.9mm, một mắt 2.0mm, chênh lệch delta = 1.1mm (<= 1.5mm) -> Mức A
-    res_mild_diff = evaluate_triage(0.9, 2.0, 1.1)
-    assert res_mild_diff.tier == ScreeningTier.TIER_A
-    assert "PHYSIOLOGICAL_NORMAL" in res_mild_diff.trigger_reasons
+    # Trường hợp 3: Cả hai mắt < 1.0mm -> Kích hoạt Mức C chốt chặn hai mắt
+    res_both_severe = evaluate_triage(0.8, 0.8, 0.0)
+    assert res_both_severe.tier == ScreeningTier.TIER_C
+    assert res_both_severe.is_bilateral_severe_triggered is True
+    assert "BILATERAL_SEVERE_MRD1_UNDER_1MM" in res_both_severe.trigger_reasons

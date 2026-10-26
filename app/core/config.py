@@ -13,16 +13,16 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
-    # CORS cấu hình cho phép Frontend truy cập
+    # CORS: chỉ cho phép các frontend origin đã xác định
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
-        "https://*.vercel.app",
+        "https://ptosis-check.remicare.id.vn",
     ]
 
     # Ngưỡng phân tầng sàng lọc mi mắt (Đông Á / Dân số học - Asymmetry-First)
-    CRITICAL_SEVERE_MRD1_MM: float = 0.0
+    CRITICAL_SEVERE_MRD1_MM: float = 2.0
     ABSOLUTE_SEVERE_MRD1_MM: float = 2.0
     HIGH_SYMMETRY_DELTA_MAX_MM: float = 0.5
     SYMMETRIC_MIN_MRD1_MM: float = 2.0
@@ -99,9 +99,18 @@ class Settings(BaseSettings):
     # Ngưỡng an toàn biên khung hình (Module M2 - Quality Gate)
     OCULAR_EDGE_MARGIN_PX: int = 2  # Khoảng cách an toàn tối thiểu từ mốc mắt đến mép ảnh
 
-    # Quản lý đường dẫn trọng số mô hình học sâu và thiết bị tính toán (Phase 1)
-    WEIGHTS_DIR: Path = Path(__file__).resolve().parent.parent / "models" / "weights"
-    TORCH_DEVICE: str = "cpu"
+    # Cấu hình tự động định hướng ảnh (Phase B: EXIF & 4-Direction Auto-Orientation)
+    AUTO_ORIENTATION_ENABLED: bool = True
+    MAX_ORIENTATION_PROBE_ROLL_DEG: float = 15.0
+
+    # Cấu hình Nhánh Xử lý Dual-Eye Crop (Phase D: Periocular Pipeline)
+    PERIOCULAR_PIPELINE_ENABLED: bool = True
+    PERIOCULAR_SHARP_THRESHOLD: float = 20.0
+    PERIOCULAR_MAX_ROLL_DEG: float = 7.0
+    MIN_PERIOCULAR_CROP_HEIGHT: int = 180
+    MIN_PERIOCULAR_CROP_WIDTH: int = 300
+    PERIOCULAR_MIN_SCALE_FACTOR: float = 0.015
+    PERIOCULAR_MAX_SCALE_FACTOR: float = 0.60
 
     model_config = SettingsConfigDict(
         env_file=".env",

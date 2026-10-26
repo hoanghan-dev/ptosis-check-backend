@@ -363,8 +363,8 @@ def test_ocular_region_touches_image_edge():
         assert detail["rejection_reason"] == "OCULAR_REGION_TOUCHES_IMAGE_EDGE"
 
 
-def test_screening_endpoint_rejects_elongated_glare():
-    """Kiểm tra Endpoint /analyze từ chối HTTP 422 với mã REFLEX_GLARE_ARTIFACT khi mống mắt có vệt lóa dài."""
+def test_screening_endpoint_fallback_on_elongated_glare():
+    """Kiểm tra Endpoint /analyze chuyển sang fallback và gắn cờ REFLEX_GLARE_ARTIFACT khi có vệt lóa dài (Phase A - A4)."""
     img = get_valid_test_image()
     img_bytes = encode_image_to_bytes(img)
 
@@ -384,11 +384,10 @@ def test_screening_endpoint_rejects_elongated_glare():
             "/api/v1/screening/analyze",
             files={"file": ("test_glare.jpg", io.BytesIO(img_bytes), "image/jpeg")},
         )
-        assert response.status_code == 422
+        assert response.status_code == 200
         data = response.json()
-        detail = data.get("detail", data)
-        assert detail["rejection_reason"] == "REFLEX_GLARE_ARTIFACT"
-        assert "vệt lóa sáng kéo dài" in detail["rejection_message_vi"]
+        od_flags = data["measurements"]["right_eye_od"]["warning_flags"]
+        assert "REFLEX_GLARE_ARTIFACT" in od_flags
 
 
 def test_screening_endpoint_rejects_ambiguous_cluster():

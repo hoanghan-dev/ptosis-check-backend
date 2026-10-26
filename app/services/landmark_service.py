@@ -37,6 +37,7 @@ except Exception as e:
 
 from app.core.config import settings
 from app.utils.geometry import euclidean_distance
+from app.utils.mediapipe_lock import mediapipe_lock
 
 # Mốc mống mắt (Iris landmarks)
 LANDMARK_IRIS_CENTER_OD = 468
@@ -102,21 +103,8 @@ def detect_landmarks(image_bgr: np.ndarray, is_eye_crop: bool = False) -> Landma
 
     height, width = image_bgr.shape[:2]
     rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    results = mesh_detector.process(rgb_image)
-
-    pad_left = 0
-    pad_top = 0
-    pw = width
-    ph = height
-
-    if (not results.multi_face_landmarks or len(results.multi_face_landmarks[0].landmark) < 478) and is_eye_crop:
-        pad_top = int(height * 0.5)
-        pad_bot = int(height * 0.5)
-        pad_left = int(width * 0.2)
-        pad_right = int(width * 0.2)
-        padded = cv2.copyMakeBorder(image_bgr, pad_top, pad_bot, pad_left, pad_right, cv2.BORDER_REFLECT)
-        ph, pw = padded.shape[:2]
-        results = mesh_detector.process(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB))
+    with mediapipe_lock:
+        results = _LANDMARK_FACE_MESH.process(rgb_image)
 
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0:
         raise ValueError("Không phát hiện được khuôn mặt hoặc vùng mắt trong ảnh.")
@@ -167,8 +155,10 @@ def detect_landmarks(image_bgr: np.ndarray, is_eye_crop: bool = False) -> Landma
     if not is_hvid_biologically_consistent:
         warning_flags.append("HVID_ASYMMETRY_EXCEEDED")
 
-    # Kiểm tra tính khả thi của hệ số quy đổi (thông thường 0.15 - 0.50 mm/px)
-    if not (0.10 <= scale_factor_od <= 0.60 and 0.10 <= scale_factor_os <= 0.60):
+    # Kiểm tra tính khả thi của hệ số quy đổi (hỗ trợ cả ảnh crop cận cảnh và ảnh toàn mặt)
+    min_scale = getattr(settings, "PERIOCULAR_MIN_SCALE_FACTOR", 0.015)
+    max_scale = getattr(settings, "PERIOCULAR_MAX_SCALE_FACTOR", 0.60)
+    if not (min_scale <= scale_factor_od <= max_scale and min_scale <= scale_factor_os <= max_scale):
         warning_flags.append("SCALE_FACTOR_OUTSIDE_EXPECTED_RANGE")
 
     # 6. Trích xuất đường viền bờ mi trên, mi dưới, cung mày
