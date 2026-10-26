@@ -144,8 +144,10 @@ def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
     if not is_hvid_biologically_consistent:
         warning_flags.append("HVID_ASYMMETRY_EXCEEDED")
 
-    # Kiểm tra tính khả thi của hệ số quy đổi (thông thường 0.15 - 0.50 mm/px)
-    if not (0.10 <= scale_factor_od <= 0.60 and 0.10 <= scale_factor_os <= 0.60):
+    # Kiểm tra tính khả thi của hệ số quy đổi (hỗ trợ cả ảnh crop cận cảnh và ảnh toàn mặt)
+    min_scale = getattr(settings, "PERIOCULAR_MIN_SCALE_FACTOR", 0.015)
+    max_scale = getattr(settings, "PERIOCULAR_MAX_SCALE_FACTOR", 0.60)
+    if not (min_scale <= scale_factor_od <= max_scale and min_scale <= scale_factor_os <= max_scale):
         warning_flags.append("SCALE_FACTOR_OUTSIDE_EXPECTED_RANGE")
 
     # 6. Trích xuất đường viền bờ mi trên, mi dưới, cung mày

@@ -165,9 +165,12 @@ def test_mrd1_negative_sign_convention():
         margin_os=margin_os,
     )
 
-    assert meas.right_eye_od.mrd1_px == -4.0
-    assert meas.right_eye_od.mrd1_mm == -1.0
-    assert meas.right_eye_od.mrd1_estimated_range == "-1.5 - -0.5 mm"
+    # Phase A - A2: Không trả về số âm giả tạo, trả về None và MEASUREMENT_UNAVAILABLE
+    assert meas.right_eye_od.mrd1_px is None
+    assert meas.right_eye_od.mrd1_mm is None
+    assert meas.right_eye_od.mrd1_estimated_range is None
+    assert meas.right_eye_od.status == "MEASUREMENT_UNAVAILABLE"
+    assert "ANATOMICAL_NEGATIVE_SUSPECTED" in meas.right_eye_od.warning_flags
 
 
 # ==============================================================================

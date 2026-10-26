@@ -36,6 +36,7 @@ def extract_upper_margin(
     landmarks_upper: List[Tuple[float, float]],
     reflex_point: Tuple[float, float],
     image_gray: np.ndarray,
+    r_iris: Optional[float] = None,
 ) -> MarginResult:
     """
     Trích xuất bờ sụn mi trên tại kinh tuyến thẳng đứng x_ref kết hợp B-spline và gradient.
@@ -74,8 +75,11 @@ def extract_upper_margin(
         num_points=settings.EYELID_DENSE_CURVE_POINTS
     )
 
-    # 3. Quét gradient cường độ sáng dọc cột x_ref trong khoảng y_init +- 6 px
-    window_px = settings.EYELID_GRADIENT_WINDOW_PX
+    # 3. Quét gradient cường độ sáng dọc cột x_ref (tự thích ứng theo R_iris nếu có)
+    if r_iris is not None and r_iris > 0:
+        window_px = max(settings.EYELID_GRADIENT_WINDOW_PX, int(round(0.12 * r_iris)))
+    else:
+        window_px = settings.EYELID_GRADIENT_WINDOW_PX
     x_col = int(np.clip(int(np.round(x_ref)), 0, width - 1))
     y_int = int(np.round(y_init))
 
@@ -158,8 +162,11 @@ def extract_upper_margin(
         else:
             best_y = float(cand_y)
 
-        # Giới hạn độ lệch tối đa so với y_init theo cấu hình
-        max_dev = float(settings.EYELID_MAX_EDGE_DEVIATION_PX)
+        # Giới hạn độ lệch tối đa so với y_init theo cấu hình hoặc tỷ lệ R_iris
+        if r_iris is not None and r_iris > 0:
+            max_dev = max(float(settings.EYELID_MAX_EDGE_DEVIATION_PX), 0.08 * r_iris)
+        else:
+            max_dev = float(settings.EYELID_MAX_EDGE_DEVIATION_PX)
         best_y = float(np.clip(best_y, y_init - max_dev, y_init + max_dev))
         is_refined = True
     else:

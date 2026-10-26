@@ -1,3 +1,4 @@
+from app.services.landmark_service import LandmarkResult
 """
 Dịch vụ Cổng Sàng lọc Chất lượng Hình ảnh Lâm sàng (Module M2).
 Đánh giá ảnh trực tiếp trong bộ nhớ RAM, tuyệt đối không ghi đĩa (G2).
@@ -492,6 +493,187 @@ def evaluate_quality(image_bgr: np.ndarray) -> QualityGateResult:
         aperture_ratio_od=round(ratio_od, 3),
         aperture_ratio_os=round(ratio_os, 3),
         audit_details={
+            "pose": pose_audit.model_dump(),
+            "sharpness_score": round(sharpness, 2),
+            "mean_illumination": round(mean_brightness, 2),
+            "glare_ratio_od": round(glare_od, 3),
+            "glare_ratio_os": round(glare_os, 3),
+            "aperture_ratio_od": round(ratio_od, 3),
+            "aperture_ratio_os": round(ratio_os, 3),
+            "eye_width_od_px": round(width_od, 1),
+            "eye_width_os_px": round(width_os, 1),
+            "iris_diameter_od_px": round(iris_diameter_od, 1),
+            "iris_diameter_os_px": round(iris_diameter_os, 1),
+        },
+    )
+
+
+def evaluate_periocular_quality(
+    image_bgr: np.ndarray,
+    landmarks: LandmarkResult,
+) -> QualityGateResult:
+    """
+    Cổng Sàng lọc Chất lượng cho Ảnh Crop Hai Mắt (Module M2-Crop / Phase D):
+    1. Kiểm tra độ phân giải tối thiểu ảnh crop: Chiều cao >= 180 px, Chiều rộng >= 300 px.
+    2. Kiểm tra độ sáng xám trung bình toàn khung ảnh (40 <= mean_I <= 220).
+    3. Nhận diện mốc giải phẫu vùng mắt.
+    4. Ước lượng góc nghiêng 2D (Head Roll) qua vector nối khóe mắt: |Roll| <= 7.0 deg (Risk 3).
+    5. Kiểm tra tỷ lệ mở khe mi (Palpebral aperture ratio >= 0.15) phát hiện nhắm mắt.
+    6. Kiểm tra độ sắc nét bằng phương sai Laplacian (ngưỡng thích ứng >= 20.0).
+    7. Kiểm tra lóa sáng trên đĩa mống mắt.
+    8. Nới lỏng kiểm tra biên ảnh (Risk 2).
+    """
+    if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.size == 0:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="IMAGE_UNREADABLE",
+            rejection_message_vi="Không thể đọc dữ liệu ảnh crop. Vui lòng tải lại ảnh hợp lệ.",
+            audit_details={"error": "empty_or_invalid_array"},
+        )
+
+    height, width = image_bgr.shape[:2]
+    min_h = getattr(settings, "MIN_PERIOCULAR_CROP_HEIGHT", 180)
+    min_w = getattr(settings, "MIN_PERIOCULAR_CROP_WIDTH", 300)
+
+    if height < min_h or width < min_w:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="LOW_RESOLUTION",
+            rejection_message_vi="Độ phân giải ảnh crop quá nhỏ. Vui lòng chụp hoặc cắt ảnh rõ nét hơn với độ phân giải cao hơn.",
+            audit_details={"height": height, "width": width, "min_height_required": min_h, "min_width_required": min_w},
+        )
+
+    gray_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    mean_brightness = float(np.mean(gray_image))
+
+    # 1. Kiểm tra độ sáng
+    if mean_brightness < settings.MIN_BRIGHTNESS:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="TOO_DARK",
+            rejection_message_vi="Ảnh quá tối, thiếu ánh sáng ở vùng mặt và mắt. Vui lòng bật thêm đèn hoặc chuyển tới nơi đủ sáng và chụp lại.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"mean_brightness": round(mean_brightness, 2), "min_allowed_brightness": settings.MIN_BRIGHTNESS},
+        )
+
+    if mean_brightness > settings.MAX_BRIGHTNESS:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="TOO_BRIGHT",
+            rejection_message_vi="Ảnh quá sáng hoặc bị cháy sáng. Vui lòng giảm bớt ánh sáng chiếu trực tiếp vào mặt và chụp lại.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"mean_brightness": round(mean_brightness, 2), "max_allowed_brightness": settings.MAX_BRIGHTNESS},
+        )
+
+    # 2. Kiểm tra mốc giải phẫu
+    if landmarks is None or len(landmarks.landmarks_px) < 478:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="NO_FACE_DETECTED",
+            rejection_message_vi="Không nhận diện được mốc giải phẫu vùng mắt. Vui lòng chụp ảnh rõ nét và đủ ánh sáng.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"landmarks_count": 0},
+        )
+
+    landmarks_px = landmarks.landmarks_px
+
+    # 3. Ước lượng góc nghiêng 2D (Head Roll) per Risk 3:
+    # Vector khóe mắt ngoài (33 - 263) và khóe mắt trong (133 - 362)
+    p33 = landmarks_px[LANDMARK_RIGHT_EYE_OUTER]
+    p263 = landmarks_px[LANDMARK_LEFT_EYE_OUTER]
+    p133 = landmarks_px[LANDMARK_RIGHT_EYE_INNER]
+    p362 = landmarks_px[LANDMARK_LEFT_EYE_INNER]
+
+    roll_lat = float(np.degrees(np.arctan2(p263[1] - p33[1], p263[0] - p33[0])))
+    roll_med = float(np.degrees(np.arctan2(p362[1] - p133[1], p362[0] - p133[0])))
+    roll_2d = float((roll_lat + roll_med) / 2.0)
+
+    pose_audit = PoseAudit(yaw=0.0, pitch=0.0, roll=round(roll_2d, 2))
+    max_roll = getattr(settings, "PERIOCULAR_MAX_ROLL_DEG", 7.0)
+
+    if abs(roll_2d) > max_roll:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="HEAD_ROLL_EXCEEDED",
+            rejection_message_vi="Đầu hoặc ảnh chụp đang bị nghiêng sang một bên. Vui lòng giữ thẳng máy và chụp lại.",
+            pose=pose_audit,
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"roll_deg": round(roll_2d, 2), "max_allowed_roll_deg": max_roll},
+        )
+
+    # 4. Kiểm tra độ mở của mắt (Palpebral aperture ratio >= 0.15)
+    width_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_OUTER] - landmarks_px[LANDMARK_RIGHT_EYE_INNER]))
+    height_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_TOP] - landmarks_px[LANDMARK_RIGHT_EYE_BOTTOM]))
+    ratio_od = height_od / max(width_od, 1.0)
+
+    width_os = float(np.linalg.norm(landmarks_px[LANDMARK_LEFT_EYE_OUTER] - landmarks_px[LANDMARK_LEFT_EYE_INNER]))
+    height_os = float(np.linalg.norm(landmarks_px[LANDMARK_LEFT_EYE_TOP] - landmarks_px[LANDMARK_LEFT_EYE_BOTTOM]))
+    ratio_os = height_os / max(width_os, 1.0)
+
+    if min(ratio_od, ratio_os) < settings.MIN_EYE_APERTURE_RATIO:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="EYES_CLOSED",
+            rejection_message_vi="Mắt đang nhắm hoặc nheo mi. Vui lòng mở mắt to tự nhiên khi chụp lại.",
+            pose=pose_audit,
+            aperture_ratio_od=round(ratio_od, 3),
+            aperture_ratio_os=round(ratio_os, 3),
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={
+                "aperture_ratio_od": round(ratio_od, 3),
+                "aperture_ratio_os": round(ratio_os, 3),
+                "min_allowed_ratio": settings.MIN_EYE_APERTURE_RATIO,
+            },
+        )
+
+    # 5. Kiểm tra độ sắc nét bằng phương sai Laplacian toàn ảnh crop
+    sharpness = float(cv2.Laplacian(gray_image, cv2.CV_64F).var())
+    sharpness_threshold = getattr(settings, "PERIOCULAR_SHARP_THRESHOLD", 20.0)
+    if sharpness < sharpness_threshold:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BLUR_DETECTED",
+            rejection_message_vi="Ảnh bị mờ nhòe do rung tay hoặc lấy nét sai. Vui lòng giữ chắc máy và chụp lại.",
+            pose=pose_audit,
+            sharpness_score=round(sharpness, 2),
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"sharpness_score": round(sharpness, 2), "min_allowed_sharpness": sharpness_threshold},
+        )
+
+    # 6. Kiểm tra lóa sáng trên mống mắt
+    iris_diameter_od = landmarks.hvid_od_px
+    iris_diameter_os = landmarks.hvid_os_px
+    glare_od = compute_iris_glare_ratio(gray_image, landmarks_px[LANDMARK_IRIS_CENTER_OD], iris_diameter_od / 2.0)
+    glare_os = compute_iris_glare_ratio(gray_image, landmarks_px[LANDMARK_IRIS_CENTER_OS], iris_diameter_os / 2.0)
+    max_glare = max(glare_od, glare_os)
+
+    if max_glare > settings.MAX_GLARE_RATIO:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="GLARE_DETECTED",
+            rejection_message_vi="Mống mắt bị lóa sáng do ánh đèn hoặc phản quang gắt. Vui lòng tránh nguồn sáng chiếu trực diện và chụp lại.",
+            pose=pose_audit,
+            glare_ratio=round(max_glare, 3),
+            sharpness_score=round(sharpness, 2),
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={
+                "glare_ratio_od": round(glare_od, 3),
+                "glare_ratio_os": round(glare_os, 3),
+                "max_allowed_glare_ratio": settings.MAX_GLARE_RATIO,
+            },
+        )
+
+    # 7. Đạt toàn bộ tiêu chuẩn Cổng Chất lượng Periocular
+    return QualityGateResult(
+        passed=True,
+        pose=pose_audit,
+        sharpness_score=round(sharpness, 2),
+        mean_illumination=round(mean_brightness, 2),
+        glare_ratio=round(max_glare, 3),
+        aperture_ratio_od=round(ratio_od, 3),
+        aperture_ratio_os=round(ratio_os, 3),
+        audit_details={
+            "pipeline": "PERIOCULAR_PIPELINE",
             "pose": pose_audit.model_dump(),
             "sharpness_score": round(sharpness, 2),
             "mean_illumination": round(mean_brightness, 2),
