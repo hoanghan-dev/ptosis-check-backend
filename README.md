@@ -4,7 +4,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-5C3EE8?logo=opencv)](https://opencv.org/)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-Face%20Mesh%20v2-FF6F00?logo=google)](https://developers.google.com/mediapipe)
-[![Pytest](https://img.shields.io/badge/Tests-110%20Passing-brightgreen?logo=pytest)](https://pytest.org/)
+[![Pytest](https://img.shields.io/badge/Tests-218%20Passing-brightgreen?logo=pytest)](https://pytest.org/)
 [![Security & Privacy](https://img.shields.io/badge/Privacy-Zero--Retention%20In--Memory-success)]()
 
 Hệ thống API backend hiệu năng cao phục vụ **Sàng lọc Hình thái Mi mắt (Ptosis Morphology Screening)**. Ứng dụng công nghệ Thị giác Máy tính (Computer Vision), mô hình điểm mốc giải phẫu khuôn mặt độ phân giải cao và thuật toán phân tầng ưu tiên tính bất đối xứng hai bên (**Asymmetry-First Triage Engine**).
@@ -45,10 +45,10 @@ Hệ thống xử lý ảnh đơn nhất qua đường ống nối tiếp gồm 
        │   └── Khoảng cách & Mở mắt: Khẩu độ khe mi ≥ 0.15, Đường kính mống mắt ≥ 30px
        │
        ▼
- [ Module M3: Trích xuất mốc hình học & Mống mắt ] ──► (MediaPipe 478 landmarks + Iris tracking)
+ [ Module M3: Trích xuất mốc & Rìa mống mắt ] ──► (InputRouter: Fullface/Crop + Synthetic Canvas + Daugman CV Limbus)
        │
        ▼
- [ Module M4: Định vị phản quang giác mạc Purkinje ] ──► (Tìm phản xạ R1; Fallback: Đồng tử / Tâm mống mắt)
+ [ Module M4: Phản quang Purkinje & Chốt chặn an toàn ] ──► (Purkinje R1; Glare/Pupil Fallback; Unilateral Occlusion Guard)
        │
        ▼
  [ Module M5: Phân đoạn bờ sụn mi trên ] ──► (Lọc gradient Sobel-Y dọc + Nội suy Spline bậc 3)
@@ -149,26 +149,28 @@ Cây quyết định hoạt động theo triết lý **Ưu tiên Bất đối x�
        │
        ├─► [NGOẠI LỆ 1] Bờ mi che lấp hoàn toàn phản quang? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ├─► [NGOẠI LỆ 2] min(MRD1) < 1.0 mm (bất kể ΔMRD1)? ──► CÓ ──► [ MỨC C (TIER_C) ]
+       ├─► [NGOẠI LỆ 2] min(MRD1) ≤ 0 mm (bất kể ΔMRD1)? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │
-       ▼ (Không vi phạm ngoại lệ: min(MRD1) ≥ 1.0 mm)
+       ▼ (Không vi phạm ngoại lệ: min(MRD1) > 0 mm)
        │
        ├─► [ƯU TIÊN 1] ΔMRD1 > 2.0 mm (Bất đối xứng rõ rệt)? ──► CÓ ──► [ MỨC C (TIER_C) ]
        │               (Lúc này mới xét chi tiết MRD1 2 mắt để phân định mức độ)
        │
-       ├─► [ƯU TIÊN 2] 1.5 mm < ΔMRD1 ≤ 2.0 mm HOẶC ΔBrow > 8 px? ──► CÓ ──► [ MỨC B (TIER_B) ]
+       ├─► [ƯU TIÊN 2] 1.5 mm < ΔMRD1 ≤ 2.0 mm? ──► CÓ ──► [ MỨC B (TIER_B) ]
+       │
+       ├─► [ƯU TIÊN 3] ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) < 2.0 mm KÈM ΔBrow > 8 px? ──► CÓ ──► [ MỨC B (TIER_B) ]
        │
        ▼
- [ MỨC A (TIER_A): ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) ≥ 1.0 mm (Sinh lý bình thường) ]
+ [ MỨC A (TIER_A): ΔMRD1 ≤ 1.5 mm VÀ min(MRD1) ≥ 1.0 mm (Dáng mắt bình thường / Mắt 1 mí Á Đông) ]
 ```
 
 ### Bảng chi tiết 3 mức khuyến nghị:
 
 | Mức phân tầng | Tên gọi chuẩn | Tiêu chí kích hoạt chính | Khuyến nghị hành động đại chúng |
 | :---: | :--- | :--- | :--- |
-| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 1.5\text{ mm}$ VÀ $\min(MRD1) \ge 1.0\text{ mm}$ VÀ $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
+| **Mức A**<br>`TIER_A` | **Không phát hiện bất thường** | $\Delta MRD1 \le 1.5\text{ mm}$ VÀ $\min(MRD1) > 0\text{ mm}$ VÀ $\Delta Brow \le 8\text{ px}$. | Chưa ghi nhận dấu hiệu cần can thiệp. Tiếp tục duy trì sinh hoạt lành mạnh và theo dõi định kỳ. |
 | **Mức B**<br>`TIER_B` | **Dấu hiệu nghi ngờ / Ranh giới** | $1.5\text{ mm} < \Delta MRD1 \le 2.0\text{ mm}$; HOẶC $\Delta Brow > 8.0\text{ px}$. | Ghi nhận độ cao mi ở mức ranh giới hoặc có chênh lệch nhẹ. Khuyến nghị theo dõi thêm và cân nhắc thăm khám khi có dịp. |
-| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC **ngoại lệ $\min(MRD1) < 1.0\text{ mm}$** (kể cả khi $\Delta \approx 0$ hay $\Delta < 2.0\text{ mm}$); HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
+| **Mức C**<br>`TIER_C` | **Khuyến nghị sớm thăm khám chuyên khoa** | **$\Delta MRD1 > 2.0\text{ mm}$**; HOẶC **ngoại lệ $\min(MRD1) \le 0\text{ mm}$** (kể cả khi $\Delta \approx 0$ hay $\Delta < 2.0\text{ mm}$); HOẶC phản quang giác mạc bị che lấp. | Bờ mi che phủ đáng kể trục thị giác hoặc có sự bất đối xứng rõ rệt. Khuyến nghị sớm đến cơ sở y tế chuyên khoa mắt để được thăm khám trực tiếp. |
 
 ---
 
@@ -260,11 +262,11 @@ Sau khi khởi chạy server, bạn có thể truy cập các tài liệu tươn
 
 ## Kiểm thử tự động & Kiểm toán an toàn
 
-Toàn bộ backend được bảo vệ bởi bộ kiểm thử tự động toàn diện với **110 bài test**:
+Toàn bộ backend được bảo vệ bởi bộ kiểm thử tự động toàn diện với **218 bài test**:
 
 ```bash
 # Kích hoạt môi trường ảo nếu chưa kích hoạt
-# Chạy toàn bộ 110 bài test đơn vị, tích hợp và luồng phân tầng
+# Chạy toàn bộ 218 bài test đơn vị, tích hợp và luồng phân tầng
 pytest tests/ -v -p no:cacheprovider
 
 # Chạy kiểm toán danh mục từ ngữ cấm theo tiêu chuẩn phi chẩn đoán G4

@@ -86,3 +86,25 @@ def test_zero_disk_retention_after_20_analyze_requests():
         f"VI PHẠM GUARDRAIL G2: Phát hiện {len(newly_created_files)} tệp dữ liệu được ghi lên đĩa: "
         f"{[str(p) for p in newly_created_files]}"
     )
+
+
+def test_zero_disk_retention_eye_crop_mode():
+    """Kiểm toán gửi request sàng lọc chế độ eye_crop và xác minh không có tệp nào được ghi ra đĩa (G2)."""
+    current_dir = Path(__file__).resolve().parent
+    backend_dir = current_dir.parent.parent
+    app_dir = backend_dir / "app"
+
+    files_before = scan_image_files(app_dir)
+    img_bytes = get_test_image_bytes()
+
+    for i in range(10):
+        response = client.post(
+            "/api/v1/screening/analyze",
+            data={"image_type": "eye_crop"},
+            files={"file": (f"test_audit_crop_{i}.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        )
+        assert response.status_code in {200, 422}
+
+    files_after = scan_image_files(app_dir)
+    newly_created = files_after - files_before
+    assert len(newly_created) == 0, f"Phát hiện tệp rò rỉ khi chạy eye_crop: {newly_created}"

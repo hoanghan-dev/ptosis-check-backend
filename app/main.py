@@ -6,7 +6,9 @@ Tuân thủ G4: Tuyệt đối không dùng từ ngữ thuộc danh mục cấm.
 """
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.api_router import api_router
@@ -47,6 +49,18 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # Đăng ký Router chính
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Chuẩn hóa cấu trúc phản hồi lỗi theo 06-system-architecture.md § 9.1:
+    Nếu exc.detail là dict chứa error_code (ví dụ QUALITY_GATE_REJECTED),
+    trả về trực tiếp ở root-level của JSON thay vì bọc lồng trong key 'detail'.
+    """
+    if isinstance(exc.detail, dict) and "error_code" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.get("/", tags=["Health"])

@@ -3,6 +3,7 @@ Cấu hình hệ thống và các ngưỡng tham số lâm sàng sàng lọc mi 
 Tuân thủ tuyệt đối quy tắc không dùng từ ngữ thuộc danh mục cấm (G4).
 """
 
+from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
     ]
 
     # Ngưỡng phân tầng sàng lọc mi mắt (Đông Á / Dân số học - Asymmetry-First)
-    CRITICAL_SEVERE_MRD1_MM: float = 1.0
+    CRITICAL_SEVERE_MRD1_MM: float = 2.0
     ABSOLUTE_SEVERE_MRD1_MM: float = 2.0
     HIGH_SYMMETRY_DELTA_MAX_MM: float = 0.5
     SYMMETRIC_MIN_MRD1_MM: float = 2.0
@@ -42,6 +43,15 @@ class Settings(BaseSettings):
     MAX_GLARE_RATIO: float = 0.15
     MIN_EYE_APERTURE_RATIO: float = 0.15
     LAPLACIAN_SHARP_THRESHOLD: float = 50.0
+
+    # Ngưỡng chuyên biệt cho chế độ tải ảnh crop mắt (eye_crop)
+    EYE_CROP_MIN_RESOLUTION_PX: int = 150
+    EYE_CROP_EDGE_MARGIN_PX: int = 2
+
+    # Ngưỡng dung lượng tệp tải lên (10KB - 15MB cho eye_crop; 50KB - 15MB cho fullface)
+    MIN_FILE_SIZE_FULLFACE_BYTES: int = 50 * 1024  # 50 KB
+    MIN_FILE_SIZE_EYE_CROP_BYTES: int = 10 * 1024  # 10 KB
+    MAX_FILE_SIZE_BYTES: int = 15 * 1024 * 1024  # 15 MB
 
     # Thước đo giải phẫu quy chuẩn
     ASSUMED_CORNEAL_DIAMETER_MM: float = 11.71
@@ -88,6 +98,19 @@ class Settings(BaseSettings):
 
     # Ngưỡng an toàn biên khung hình (Module M2 - Quality Gate)
     OCULAR_EDGE_MARGIN_PX: int = 2  # Khoảng cách an toàn tối thiểu từ mốc mắt đến mép ảnh
+
+    # Cấu hình tự động định hướng ảnh (Phase B: EXIF & 4-Direction Auto-Orientation)
+    AUTO_ORIENTATION_ENABLED: bool = True
+    MAX_ORIENTATION_PROBE_ROLL_DEG: float = 15.0
+
+    # Cấu hình Nhánh Xử lý Dual-Eye Crop (Phase D: Periocular Pipeline)
+    PERIOCULAR_PIPELINE_ENABLED: bool = True
+    PERIOCULAR_SHARP_THRESHOLD: float = 20.0
+    PERIOCULAR_MAX_ROLL_DEG: float = 7.0
+    MIN_PERIOCULAR_CROP_HEIGHT: int = 180
+    MIN_PERIOCULAR_CROP_WIDTH: int = 300
+    PERIOCULAR_MIN_SCALE_FACTOR: float = 0.015
+    PERIOCULAR_MAX_SCALE_FACTOR: float = 0.60
 
     model_config = SettingsConfigDict(
         env_file=".env",
