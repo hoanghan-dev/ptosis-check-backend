@@ -3,6 +3,7 @@ Cấu hình hệ thống và các ngưỡng tham số lâm sàng sàng lọc mi 
 Tuân thủ tuyệt đối quy tắc không dùng từ ngữ thuộc danh mục cấm (G4).
 """
 
+from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,6 +43,15 @@ class Settings(BaseSettings):
     MAX_GLARE_RATIO: float = 0.15
     MIN_EYE_APERTURE_RATIO: float = 0.15
     LAPLACIAN_SHARP_THRESHOLD: float = 50.0
+
+    # Ngưỡng chuyên biệt cho chế độ tải ảnh crop mắt (eye_crop)
+    EYE_CROP_MIN_RESOLUTION_PX: int = 150
+    EYE_CROP_EDGE_MARGIN_PX: int = 2
+
+    # Ngưỡng dung lượng tệp tải lên (10KB - 15MB cho eye_crop; 50KB - 15MB cho fullface)
+    MIN_FILE_SIZE_FULLFACE_BYTES: int = 50 * 1024  # 50 KB
+    MIN_FILE_SIZE_EYE_CROP_BYTES: int = 10 * 1024  # 10 KB
+    MAX_FILE_SIZE_BYTES: int = 15 * 1024 * 1024  # 15 MB
 
     # Thước đo giải phẫu quy chuẩn
     ASSUMED_CORNEAL_DIAMETER_MM: float = 11.71

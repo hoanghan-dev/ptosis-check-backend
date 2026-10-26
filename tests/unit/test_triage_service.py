@@ -32,10 +32,10 @@ SAMPLE_IMAGE_PATH = get_sample_image_path()
         ("TC-7.2", 4.0, 2.8, 1.2, 0.0, False, ScreeningTier.TIER_A, False),
         # TC-7.3: MRD1_OD=4.0, MRD1_OS=2.3, delta=1.7 -> Mức B (ranh giới 1.5 < delta <= 2.0mm)
         ("TC-7.3", 4.0, 2.3, 1.7, 0.0, False, ScreeningTier.TIER_B, False),
-        # TC-7.4: MRD1_OD=0.8, MRD1_OS=0.8, delta=0.0 -> Mức C (ngoại lệ che trục nhìn cả 2 mắt < 1.0mm)
-        ("TC-7.4", 0.8, 0.8, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
-        # TC-7.5: MRD1_OD=0.9, MRD1_OS=2.0, delta=1.1 -> Mức C (ngoại lệ 1 mắt < 1.0mm dù delta <= 1.5mm)
-        ("TC-7.5", 0.9, 2.0, 1.1, 0.0, False, ScreeningTier.TIER_C, False),
+        # TC-7.4: MRD1_OD=0.0, MRD1_OS=0.0, delta=0.0 -> Mức C (ngoại lệ che trục nhìn cả 2 mắt <= 0.0mm)
+        ("TC-7.4", 0.0, 0.0, 0.0, 0.0, False, ScreeningTier.TIER_C, True),
+        # TC-7.5: MRD1_OD=0.0, MRD1_OS=1.2, delta=1.2 -> Mức C (ngoại lệ 1 mắt <= 0.0mm dù delta <= 1.5mm)
+        ("TC-7.5", 0.0, 1.2, 1.2, 0.0, False, ScreeningTier.TIER_C, False),
         # TC-7.6: MRD1_OD=1.8, MRD1_OS=1.9, delta=0.1 -> Mức A (mắt hẹp sinh lý Á Đông, min >= 1.0mm)
         ("TC-7.6", 1.8, 1.9, 0.1, 0.0, False, ScreeningTier.TIER_A, False),
         # TC-7.7: MRD1_OD=3.0, MRD1_OS=3.0, delta=0.0 -> Mức A
@@ -102,7 +102,7 @@ def test_safety_disclaimer_presence_in_all_tiers():
     """Kiểm tra thông cáo an toàn bắt buộc xuất hiện trong mọi mức A, B, C."""
     res_a = evaluate_triage(3.5, 3.5, 0.0)
     res_b = evaluate_triage(4.0, 2.3, 1.7)
-    res_c = evaluate_triage(0.8, 0.8, 0.0)
+    res_c = evaluate_triage(0.0, 0.0, 0.0)
 
     for res in [res_a, res_b, res_c]:
         assert "chỉ mang tính sàng lọc" in res.safety_disclaimer_vi

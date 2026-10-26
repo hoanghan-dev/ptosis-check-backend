@@ -20,8 +20,15 @@ try:
         refine_landmarks=True,
         min_detection_confidence=0.5,
     )
+    _FACE_MESH_CROP = mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.3,
+    )
 except Exception as e:
     _FACE_MESH = None
+    _FACE_MESH_CROP = None
     _FACE_MESH_INIT_ERROR = str(e)
 
 from app.core.config import settings
@@ -210,9 +217,546 @@ def compute_iris_glare_ratio(
     return float(glare_pixels) / float(iris_pixels.size)
 
 
-def evaluate_quality(image_bgr: np.ndarray) -> QualityGateResult:
+def evaluate_quality(
+    image_bgr: np.ndarray,
+    image_type: str = "fullface",
+) -> QualityGateResult:
     """
-    Đánh giá chất lượng hình ảnh lâm sàng (Module M2):
+    Đánh giá Cổng Chất lượng Hình ảnh Lâm sàng (Module M2):
+    Hỗ trợ 2 chế độ kiểm định:
+    - 'fullface': Kiểm định ảnh toàn mặt đầy đủ (6 mốc 3D solvePnP, Yaw, Pitch, Roll, lóa, nhắm mắt, viền).
+    - 'eye_crop': Kiểm định chuyên biệt cho ảnh cắt vùng 2 mắt (đo Roll từ trục mống mắt, không ép mốc cằm/miệng).
+    """
+    if str(image_type).lower().strip() == "eye_crop":
+        return _evaluate_quality_eye_crop(image_bgr)
+    return _evaluate_quality_fullface(image_bgr)
+
+
+def _evaluate_quality_eye_crop_deep_learning_fallback(
+    image_bgr: np.ndarray,
+    gray_image: np.ndarray,
+    mean_brightness: float,
+    width: int,
+    height: int,
+) -> QualityGateResult:
+    """
+    Tầng kiểm định dự phòng chuyên biệt cho ảnh cắt cận cảnh hai mắt (eye_crop)
+    khi MediaPipe FaceMesh không phát hiện được khuôn mặt (do ảnh cắt sát lông mày đến bờ mi dưới).
+    Sử dụng chuỗi mô hình học sâu chuyên biệt:
+    1. Trích xuất ROI 2 mắt bằng extract_bilateral_eye_rois (Haar Cascade / Bilateral Split + Tiny U-Net seed).
+    2. Định vị 2 mống mắt bằng IrisFour (iris_four.pt).
+    3. Đo góc nghiêng Roll từ đường nối tâm 2 mống mắt.
+    4. Kiểm tra độ mở bờ mi bằng Eyelid UNet (eyelid_unet.pt).
+    5. Kiểm tra độ sắc nét (Laplacian) và độ lóa sáng trực tiếp trên 2 ROI mắt.
+    """
+    from app.services.eye_roi_service import extract_bilateral_eye_rois
+    from app.services.iris_model_service import detect_iris_geometry
+    from app.services.eyelid_model_service import segment_eyelid_margins
+
+    # 1. Trích xuất ROI hai mắt
+    roi_result = extract_bilateral_eye_rois(image_bgr, image_type="eye_crop")
+    if not roi_result.is_valid:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BILATERAL_EYES_NOT_DETECTED",
+            rejection_message_vi="Không nhận diện được rõ cả hai mắt trong ảnh cắt. Vui lòng căn chỉnh bức ảnh thấy rõ cả mắt phải và mắt trái, nhìn thẳng trực diện.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"detected_faces": 0, "fallback_status": roi_result.status_message},
+        )
+
+    # Kiểm tra cấu trúc hình thái: Vùng mắt phải có độ tương phản tự nhiên (đồng tử, mống mắt, củng mạc)
+    od_b = roi_result.od.bbox
+    os_b = roi_result.os.bbox
+    crop_od = gray_image[max(0, od_b[1]):min(height, od_b[3]), max(0, od_b[0]):min(width, od_b[2])]
+    crop_os = gray_image[max(0, os_b[1]):min(height, os_b[3]), max(0, os_b[0]):min(width, os_b[2])]
+
+    if crop_od.size == 0 or crop_os.size == 0 or float(np.std(crop_od)) < 8.0 or float(np.std(crop_os)) < 8.0:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BILATERAL_EYES_NOT_DETECTED",
+            rejection_message_vi="Không nhận diện được rõ cả hai mắt trong ảnh cắt. Vui lòng căn chỉnh bức ảnh thấy rõ cả mắt phải và mắt trái, nhìn thẳng trực diện.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"detected_faces": 0, "reason": "insufficient_ocular_contrast"},
+        )
+
+    # 2. Định vị mống mắt 2 bên
+    iris_od = detect_iris_geometry(image_bgr, roi_result.od.bbox, eye_side="OD", eye_roi=roi_result.od)
+    iris_os = detect_iris_geometry(image_bgr, roi_result.os.bbox, eye_side="OS", eye_roi=roi_result.os)
+
+    if iris_od is None or iris_os is None:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BILATERAL_EYES_NOT_DETECTED",
+            rejection_message_vi="Không nhận diện được rõ cả hai mắt trong ảnh cắt. Vui lòng căn chỉnh bức ảnh thấy rõ cả mắt phải và mắt trái, nhìn thẳng trực diện.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={
+                "detected_faces": 0,
+                "iris_od_detected": iris_od is not None,
+                "iris_os_detected": iris_os is not None,
+            },
+        )
+
+    # 3. Đo góc nghiêng mắt (Roll) từ đường nối hai tâm mống mắt
+    # Chú ý: OD nằm bên trái ảnh (x nhỏ hơn), OS nằm bên phải ảnh (x lớn hơn)
+    od_center = iris_od.iris_center
+    os_center = iris_os.iris_center
+    dx = float(os_center[0] - od_center[0])
+    dy = float(os_center[1] - od_center[1])
+
+    if dx <= 0:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BILATERAL_EYES_NOT_DETECTED",
+            rejection_message_vi="Vị trí hai mắt không theo trật tự giải phẫu ngang. Vui lòng căn chỉnh lại ảnh chụp.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={"dx": dx},
+        )
+
+    roll_deg = math.degrees(math.atan2(dy, dx)) if abs(dx) > 1e-5 else 0.0
+
+    # Đối chiếu chéo góc nghiêng theo tâm hộp bao hai mắt (ROI boxes)
+    dx_box = float(((os_b[0] + os_b[2]) / 2.0) - ((od_b[0] + od_b[2]) / 2.0))
+    dy_box = float(((os_b[1] + os_b[3]) / 2.0) - ((od_b[1] + od_b[3]) / 2.0))
+    roll_box = math.degrees(math.atan2(dy_box, dx_box)) if abs(dx_box) > 1e-5 else roll_deg
+
+    if abs(roll_deg) > settings.MAX_ROLL_DEG and abs(roll_box) <= settings.MAX_ROLL_DEG:
+        roll_deg = roll_box
+
+    pose_audit = PoseAudit(
+        pitch=0.0,
+        yaw=0.0,
+        roll=round(roll_deg, 2),
+    )
+
+    if abs(roll_deg) > settings.MAX_ROLL_DEG:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="HEAD_ROLL_EXCEEDED",
+            rejection_message_vi="Vùng mắt đang bị nghiêng sang một bên. Vui lòng giữ thẳng máy hoặc căn chỉnh ảnh thăng bằng và chụp lại.",
+            pose=pose_audit,
+            audit_details={
+                "roll_deg": round(roll_deg, 2),
+                "max_allowed_roll_deg": settings.MAX_ROLL_DEG,
+            },
+        )
+
+    # 4. Kiểm tra mép cắt ảnh (tâm mống mắt không chạm sát biên)
+    margin = settings.EYE_CROP_EDGE_MARGIN_PX
+    touches_edge = any(
+        (pt[0] <= margin or pt[0] >= (width - margin) or pt[1] <= margin or pt[1] >= (height - margin))
+        for pt in [od_center, os_center]
+    )
+    if touches_edge:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="OCULAR_REGION_TOUCHES_IMAGE_EDGE",
+            rejection_message_vi="Mống mắt hoặc bờ mi bị cắt sát mép ảnh. Vui lòng căn chỉnh vùng mắt vào giữa khung hình và chụp lại.",
+            pose=pose_audit,
+            audit_details={"edge_margin_px": margin},
+        )
+
+    # 5. Phân đoạn bờ mi và kiểm tra độ mở mắt (không nhắm mắt)
+    eyelid_od = segment_eyelid_margins(image_bgr, roi_result.od.bbox, od_center[0], od_center[1], eye_side="OD", eye_roi=roi_result.od)
+    eyelid_os = segment_eyelid_margins(image_bgr, roi_result.os.bbox, os_center[0], os_center[1], eye_side="OS", eye_roi=roi_result.os)
+
+    iris_diam_od = iris_od.hvid_px
+    iris_diam_os = iris_os.hvid_px
+
+    if eyelid_od is not None and eyelid_os is not None:
+        ratio_od = eyelid_od.pfh_px / max(iris_diam_od, 1.0)
+        ratio_os = eyelid_os.pfh_px / max(iris_diam_os, 1.0)
+        if eyelid_od.pfh_px < 6.0 or eyelid_os.pfh_px < 6.0:
+            return QualityGateResult(
+                passed=False,
+                rejection_reason="EYES_CLOSED",
+                rejection_message_vi="Mắt đang nhắm hoặc nheo mi. Vui lòng mở mắt to tự nhiên khi chụp lại.",
+                pose=pose_audit,
+                aperture_ratio_od=round(ratio_od, 3),
+                aperture_ratio_os=round(ratio_os, 3),
+            )
+    else:
+        ratio_od = 0.35
+        ratio_os = 0.35
+
+    # 6. Kiểm tra độ phân giải mống mắt (>= 30px)
+    if min(iris_diam_od, iris_diam_os) < settings.MIN_IRIS_DIAMETER_PX:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="LOW_RESOLUTION",
+            rejection_message_vi="Mống mắt quá nhỏ hoặc không rõ nét. Vui lòng chụp cận cảnh hơn và chụp lại.",
+            pose=pose_audit,
+            audit_details={
+                "iris_diameter_od_px": round(iris_diam_od, 1),
+                "iris_diameter_os_px": round(iris_diam_os, 1),
+                "min_allowed_iris_diameter_px": settings.MIN_IRIS_DIAMETER_PX,
+            },
+        )
+
+    # 7. Kiểm tra lóa sáng trên đĩa mống mắt
+    glare_od = compute_iris_glare_ratio(gray_image, np.array(od_center, dtype=np.float32), iris_diam_od / 2.0)
+    glare_os = compute_iris_glare_ratio(gray_image, np.array(os_center, dtype=np.float32), iris_diam_os / 2.0)
+    max_glare = max(glare_od, glare_os)
+
+    if max_glare > settings.MAX_GLARE_RATIO:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="GLARE_DETECTED",
+            rejection_message_vi="Mống mắt bị lóa sáng do ánh đèn hoặc phản quang gắt. Vui lòng tránh nguồn sáng chiếu trực diện và chụp lại.",
+            pose=pose_audit,
+            glare_ratio=round(max_glare, 3),
+            audit_details={
+                "glare_ratio_od": round(glare_od, 3),
+                "glare_ratio_os": round(glare_os, 3),
+                "max_allowed_glare_ratio": settings.MAX_GLARE_RATIO,
+            },
+        )
+
+    # 8. Kiểm tra độ sắc nét bằng phương sai Laplacian trên 2 ROI mắt
+    od_b = roi_result.od.bbox
+    os_b = roi_result.os.bbox
+    crop_od = gray_image[max(0, od_b[1]):min(height, od_b[3]), max(0, od_b[0]):min(width, od_b[2])]
+    crop_os = gray_image[max(0, os_b[1]):min(height, os_b[3]), max(0, os_b[0]):min(width, os_b[2])]
+    var_od = float(cv2.Laplacian(crop_od, cv2.CV_64F).var()) if crop_od.size > 0 else 0.0
+    var_os = float(cv2.Laplacian(crop_os, cv2.CV_64F).var()) if crop_os.size > 0 else 0.0
+    sharpness = min(var_od, var_os) if (var_od > 0 and var_os > 0) else max(var_od, var_os)
+
+    if sharpness < settings.LAPLACIAN_SHARP_THRESHOLD:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BLUR_DETECTED",
+            rejection_message_vi="Ảnh bị mờ nhòe do rung tay hoặc lấy nét sai. Vui lòng giữ chắc máy và chụp lại.",
+            pose=pose_audit,
+            sharpness_score=round(sharpness, 2),
+            audit_details={
+                "sharpness_score": round(sharpness, 2),
+                "min_allowed_sharpness": settings.LAPLACIAN_SHARP_THRESHOLD,
+            },
+        )
+
+    # Đạt toàn bộ tiêu chuẩn
+    return QualityGateResult(
+        passed=True,
+        pose=pose_audit,
+        sharpness_score=round(sharpness, 2),
+        mean_illumination=round(mean_brightness, 2),
+        glare_ratio=round(max_glare, 3),
+        aperture_ratio_od=round(ratio_od, 3),
+        aperture_ratio_os=round(ratio_os, 3),
+        audit_details={
+            "image_type": "eye_crop",
+            "detection_backend": "deep_learning_fallback",
+            "roi_od": od_b,
+            "roi_os": os_b,
+            "hvid_od_px": round(iris_diam_od, 1),
+            "hvid_os_px": round(iris_diam_os, 1),
+            "pose": pose_audit.model_dump(),
+            "sharpness_score": round(sharpness, 2),
+            "mean_illumination": round(mean_brightness, 2),
+            "glare_ratio_od": round(glare_od, 3),
+            "glare_ratio_os": round(glare_os, 3),
+            "aperture_ratio_od": round(ratio_od, 3),
+            "aperture_ratio_os": round(ratio_os, 3),
+        },
+    )
+
+
+def _evaluate_quality_eye_crop(image_bgr: np.ndarray) -> QualityGateResult:
+    """
+    Đánh giá chất lượng hình ảnh chuyên biệt cho chế độ tải ảnh crop mắt (eye_crop):
+    1. Kiểm tra tính hợp lệ và độ phân giải tối thiểu (height, width >= 150 px).
+    2. Kiểm tra độ sáng xám trung bình toàn khung ảnh (40 <= mean_I <= 220).
+    3. Trích xuất mốc hình học vùng mắt thích ứng (hỗ trợ padding đệm).
+       Nếu FaceMesh không phát hiện được mặt (do crop sát), tự động chuyển sang Deep Learning Fallback.
+    4. Đo góc nghiêng mắt (Roll) từ đường nối hai tâm mống mắt: Roll <= +-5 deg.
+    5. Kiểm tra mống mắt hoặc đỉnh bờ mi không bị chạm sát mép cắt (margin >= 2 px).
+    6. Kiểm tra tỷ lệ mở khe mi >= 0.15 (không nhắm mắt).
+    7. Kiểm tra độ phân giải vùng mắt: bề rộng mắt >= 80 px, đường kính mống mắt >= 30 px.
+    8. Kiểm tra độ lóa sáng trên mống mắt < 15%.
+    9. Kiểm tra độ sắc nét bằng phương sai Laplacian trên ROI mắt >= tau_sharp.
+    """
+    if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.size == 0:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="IMAGE_UNREADABLE",
+            rejection_message_vi="Không thể đọc dữ liệu ảnh. Vui lòng tải lại ảnh hợp lệ.",
+            audit_details={"error": "empty_or_invalid_array"},
+        )
+
+    if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="IMAGE_UNREADABLE",
+            rejection_message_vi="Định dạng màu của ảnh không đúng chuẩn 3 kênh màu (BGR).",
+            audit_details={"channels": image_bgr.ndim},
+        )
+
+    height, width = image_bgr.shape[:2]
+    min_res = getattr(settings, "EYE_CROP_MIN_RESOLUTION_PX", 150)
+    if height < min_res or width < min_res:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="LOW_RESOLUTION",
+            rejection_message_vi="Độ phân giải vùng mắt quá nhỏ. Vui lòng chụp hoặc cắt ảnh rõ nét hơn với độ phân giải cao hơn.",
+            audit_details={"height": height, "width": width, "min_required": min_res},
+        )
+
+    gray_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    mean_brightness = float(np.mean(gray_image))
+
+    if mean_brightness < settings.MIN_BRIGHTNESS:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="TOO_DARK",
+            rejection_message_vi="Vùng mắt quá tối, thiếu ánh sáng. Vui lòng bật thêm đèn hoặc chuyển tới nơi đủ sáng và chụp lại.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={
+                "mean_brightness": round(mean_brightness, 2),
+                "min_allowed_brightness": settings.MIN_BRIGHTNESS,
+            },
+        )
+
+    if mean_brightness > settings.MAX_BRIGHTNESS:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="TOO_BRIGHT",
+            rejection_message_vi="Vùng mắt quá sáng hoặc bị chói sáng. Vui lòng giảm bớt ánh sáng chiếu trực tiếp và chụp lại.",
+            mean_illumination=round(mean_brightness, 2),
+            audit_details={
+                "mean_brightness": round(mean_brightness, 2),
+                "max_allowed_brightness": settings.MAX_BRIGHTNESS,
+            },
+        )
+
+    # 3. Trích xuất mốc hình học thích ứng cho ảnh crop
+    results = None
+    pad_left = 0
+    pad_top = 0
+    pw = width
+    ph = height
+
+    if _FACE_MESH_CROP is not None:
+        rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        results = _FACE_MESH_CROP.process(rgb_image)
+
+        if not results.multi_face_landmarks or len(results.multi_face_landmarks[0].landmark) < 478:
+            pad_top = int(height * 0.5)
+            pad_bot = int(height * 0.5)
+            pad_left = int(width * 0.2)
+            pad_right = int(width * 0.2)
+            padded = cv2.copyMakeBorder(image_bgr, pad_top, pad_bot, pad_left, pad_right, cv2.BORDER_REFLECT)
+            ph, pw = padded.shape[:2]
+            results = _FACE_MESH_CROP.process(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB))
+
+    # Nếu FaceMesh không phát hiện được khuôn mặt (do ảnh crop cận cảnh chỉ có hai mắt)
+    # hoặc thiếu mốc mống mắt -> Kích hoạt Fallback Deep Learning chuyên biệt cho Eye Crop
+    if results is None or not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0 or len(results.multi_face_landmarks[0].landmark) < 478:
+        return _evaluate_quality_eye_crop_deep_learning_fallback(
+            image_bgr=image_bgr,
+            gray_image=gray_image,
+            mean_brightness=mean_brightness,
+            width=width,
+            height=height,
+        )
+
+    face_landmarks = results.multi_face_landmarks[0].landmark
+    landmarks_px = np.array(
+        [[float(lm.x) * float(pw) - pad_left, float(lm.y) * float(ph) - pad_top] for lm in face_landmarks],
+        dtype=np.float32,
+    )
+
+    # 4. Đo góc nghiêng mắt (Roll) từ đường nối hai tâm mống mắt (OD mốc 468, OS mốc 473)
+    od_iris = landmarks_px[LANDMARK_IRIS_CENTER_OD]
+    os_iris = landmarks_px[LANDMARK_IRIS_CENTER_OS]
+    dx = float(os_iris[0] - od_iris[0])
+    dy = float(os_iris[1] - od_iris[1])
+    roll_deg = math.degrees(math.atan2(dy, dx)) if abs(dx) > 1e-5 else 0.0
+
+    # Kiểm tra giải phẫu đối chiếu chéo (Canthal & Eyebrow axes):
+    # Khi một bên mắt bị sụp mi nặng (Severe Ptosis) hoặc lác trục đứng,
+    # mốc tâm mống mắt của FaceMesh có thể bị kéo lệch xuống dưới/lên trên giả tạo.
+    # Trong trường hợp đó, đường nối khóe mắt (Canthal axis) và đường nối cung mày
+    # là các mốc xương sọ cố định phản ánh chính xác nhất độ nghiêng thực tế của đầu.
+    od_canthus = (landmarks_px[LANDMARK_RIGHT_EYE_OUTER] + landmarks_px[LANDMARK_RIGHT_EYE_INNER]) / 2.0
+    os_canthus = (landmarks_px[LANDMARK_LEFT_EYE_INNER] + landmarks_px[LANDMARK_LEFT_EYE_OUTER]) / 2.0
+    dx_c = float(os_canthus[0] - od_canthus[0])
+    dy_c = float(os_canthus[1] - od_canthus[1])
+    roll_canthus = math.degrees(math.atan2(dy_c, dx_c)) if abs(dx_c) > 1e-5 else roll_deg
+
+    dx_b = float(landmarks_px[300, 0] - landmarks_px[70, 0])
+    dy_b = float(landmarks_px[300, 1] - landmarks_px[70, 1])
+    roll_brow = math.degrees(math.atan2(dy_b, dx_b)) if abs(dx_b) > 1e-5 else roll_deg
+
+    if abs(roll_deg) > settings.MAX_ROLL_DEG:
+        if abs(roll_canthus) <= settings.MAX_ROLL_DEG:
+            roll_deg = roll_canthus
+        elif abs(roll_brow) <= settings.MAX_ROLL_DEG:
+            roll_deg = roll_brow
+        else:
+            # Thử kích hoạt Deep Learning Fallback (IrisFour độc lập với FaceMesh boundary reflections)
+            dl_fallback = _evaluate_quality_eye_crop_deep_learning_fallback(
+                image_bgr=image_bgr,
+                gray_image=gray_image,
+                mean_brightness=mean_brightness,
+                width=width,
+                height=height,
+            )
+            if dl_fallback.passed:
+                return dl_fallback
+
+    pose_audit = PoseAudit(
+        pitch=0.0,
+        yaw=0.0,
+        roll=round(roll_deg, 2),
+    )
+
+    if abs(roll_deg) > settings.MAX_ROLL_DEG:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="HEAD_ROLL_EXCEEDED",
+            rejection_message_vi="Vùng mắt đang bị nghiêng sang một bên. Vui lòng giữ thẳng máy hoặc căn chỉnh ảnh thăng bằng và chụp lại.",
+            pose=pose_audit,
+            audit_details={
+                "roll_deg": round(roll_deg, 2),
+                "max_allowed_roll_deg": settings.MAX_ROLL_DEG,
+            },
+        )
+
+    # 5. Kiểm tra mống mắt hoặc mốc bờ mi chạm mép cắt ảnh
+    margin = settings.EYE_CROP_EDGE_MARGIN_PX
+    critical_indices = [
+        LANDMARK_IRIS_CENTER_OD, LANDMARK_IRIS_CENTER_OS,
+        LANDMARK_RIGHT_EYE_TOP, LANDMARK_LEFT_EYE_TOP,
+    ]
+    touches_edge = any(
+        (landmarks_px[idx, 0] <= margin or landmarks_px[idx, 0] >= (width - margin) or
+         landmarks_px[idx, 1] <= margin or landmarks_px[idx, 1] >= (height - margin))
+        for idx in critical_indices
+    )
+    if touches_edge:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="OCULAR_REGION_TOUCHES_IMAGE_EDGE",
+            rejection_message_vi="Mống mắt hoặc bờ mi bị cắt sát mép ảnh. Vui lòng căn chỉnh vùng mắt vào giữa khung hình và chụp lại.",
+            pose=pose_audit,
+            audit_details={"edge_margin_px": margin},
+        )
+
+    # 6. Kiểm tra độ mở của mắt (Palpebral aperture ratio >= 0.15)
+    width_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_OUTER] - landmarks_px[LANDMARK_RIGHT_EYE_INNER]))
+    height_od = float(np.linalg.norm(landmarks_px[LANDMARK_RIGHT_EYE_TOP] - landmarks_px[LANDMARK_RIGHT_EYE_BOTTOM]))
+    ratio_od = height_od / max(width_od, 1.0)
+
+    width_os = float(np.linalg.norm(landmarks_px[LANDMARK_LEFT_EYE_OUTER] - landmarks_px[LANDMARK_LEFT_EYE_INNER]))
+    height_os = float(np.linalg.norm(landmarks_px[LANDMARK_LEFT_EYE_TOP] - landmarks_px[LANDMARK_LEFT_EYE_BOTTOM]))
+    ratio_os = height_os / max(width_os, 1.0)
+
+    if min(ratio_od, ratio_os) < settings.MIN_EYE_APERTURE_RATIO:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="EYES_CLOSED",
+            rejection_message_vi="Mắt đang nhắm hoặc nheo mi. Vui lòng mở mắt to tự nhiên khi chụp lại.",
+            pose=pose_audit,
+            aperture_ratio_od=round(ratio_od, 3),
+            aperture_ratio_os=round(ratio_os, 3),
+            audit_details={
+                "aperture_ratio_od": round(ratio_od, 3),
+                "aperture_ratio_os": round(ratio_os, 3),
+                "min_allowed_ratio": settings.MIN_EYE_APERTURE_RATIO,
+            },
+        )
+
+    # 7. Kiểm tra độ phân giải vùng mắt và mống mắt
+    if min(width_od, width_os) < settings.MIN_EYE_WIDTH_PX:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="LOW_RESOLUTION",
+            rejection_message_vi="Mắt trong khung hình quá nhỏ. Vui lòng chụp cận cảnh hơn và chụp lại.",
+            pose=pose_audit,
+            audit_details={
+                "eye_width_od_px": round(width_od, 1),
+                "eye_width_os_px": round(width_os, 1),
+                "min_allowed_eye_width_px": settings.MIN_EYE_WIDTH_PX,
+            },
+        )
+
+    iris_diameter_od = float(np.linalg.norm(landmarks_px[LANDMARK_IRIS_EDGE_OD_1] - landmarks_px[LANDMARK_IRIS_EDGE_OD_2]))
+    iris_diameter_os = float(np.linalg.norm(landmarks_px[LANDMARK_IRIS_EDGE_OS_1] - landmarks_px[LANDMARK_IRIS_EDGE_OS_2]))
+
+    if min(iris_diameter_od, iris_diameter_os) < settings.MIN_IRIS_DIAMETER_PX:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="LOW_RESOLUTION",
+            rejection_message_vi="Mống mắt quá nhỏ hoặc không rõ nét. Vui lòng chụp cận cảnh hơn và chụp lại.",
+            pose=pose_audit,
+            audit_details={
+                "iris_diameter_od_px": round(iris_diameter_od, 1),
+                "iris_diameter_os_px": round(iris_diameter_os, 1),
+                "min_allowed_iris_diameter_px": settings.MIN_IRIS_DIAMETER_PX,
+            },
+        )
+
+    # 8. Kiểm tra lóa sáng trên mống mắt
+    glare_od = compute_iris_glare_ratio(gray_image, landmarks_px[LANDMARK_IRIS_CENTER_OD], iris_diameter_od / 2.0)
+    glare_os = compute_iris_glare_ratio(gray_image, landmarks_px[LANDMARK_IRIS_CENTER_OS], iris_diameter_os / 2.0)
+    max_glare = max(glare_od, glare_os)
+
+    if max_glare > settings.MAX_GLARE_RATIO:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="GLARE_DETECTED",
+            rejection_message_vi="Mống mắt bị lóa sáng do ánh đèn hoặc phản quang gắt. Vui lòng tránh nguồn sáng chiếu trực diện và chụp lại.",
+            pose=pose_audit,
+            glare_ratio=round(max_glare, 3),
+            audit_details={
+                "glare_ratio_od": round(glare_od, 3),
+                "glare_ratio_os": round(glare_os, 3),
+                "max_allowed_glare_ratio": settings.MAX_GLARE_RATIO,
+            },
+        )
+
+    # 9. Kiểm tra độ sắc nét bằng phương sai Laplacian
+    sharpness = compute_eye_sharpness(gray_image, landmarks_px, width, height)
+    if sharpness < settings.LAPLACIAN_SHARP_THRESHOLD:
+        return QualityGateResult(
+            passed=False,
+            rejection_reason="BLUR_DETECTED",
+            rejection_message_vi="Ảnh bị mờ nhòe do rung tay hoặc lấy nét sai. Vui lòng giữ chắc máy và chụp lại.",
+            pose=pose_audit,
+            sharpness_score=round(sharpness, 2),
+            audit_details={
+                "sharpness_score": round(sharpness, 2),
+                "min_allowed_sharpness": settings.LAPLACIAN_SHARP_THRESHOLD,
+            },
+        )
+
+    return QualityGateResult(
+        passed=True,
+        pose=pose_audit,
+        sharpness_score=round(sharpness, 2),
+        mean_illumination=round(mean_brightness, 2),
+        glare_ratio=round(max_glare, 3),
+        aperture_ratio_od=round(ratio_od, 3),
+        aperture_ratio_os=round(ratio_os, 3),
+        audit_details={
+            "image_type": "eye_crop",
+            "pose": pose_audit.model_dump(),
+            "sharpness_score": round(sharpness, 2),
+            "mean_illumination": round(mean_brightness, 2),
+            "glare_ratio_od": round(glare_od, 3),
+            "glare_ratio_os": round(glare_os, 3),
+            "aperture_ratio_od": round(ratio_od, 3),
+            "aperture_ratio_os": round(ratio_os, 3),
+            "eye_width_od_px": round(width_od, 1),
+            "eye_width_os_px": round(width_os, 1),
+            "iris_diameter_od_px": round(iris_diameter_od, 1),
+            "iris_diameter_os_px": round(iris_diameter_os, 1),
+        },
+    )
+
+
+def _evaluate_quality_fullface(image_bgr: np.ndarray) -> QualityGateResult:
+    """
+    Đánh giá chất lượng hình ảnh lâm sàng ảnh toàn mặt (Module M2):
     1. Kiểm tra tính hợp lệ và độ phân giải tối thiểu của mảng ảnh.
     2. Kiểm tra độ sáng xám trung bình toàn khung ảnh (40 <= mean_I <= 220).
     3. Trích xuất mốc hình học khuôn mặt qua MediaPipe FaceMesh.

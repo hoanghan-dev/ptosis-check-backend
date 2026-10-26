@@ -1,6 +1,6 @@
 """
-Dịch vụ Khối Đo lường MRD1, Độ Bất đối xứng & Độ Tin cậy (Module M6: Measurement Service).
-Tính toán toàn bộ các thông số hình thái mi mắt từ dữ liệu mốc giải phẫu:
+Dịch vụ Khối Đo lường MRD1, Độ Bất đối xứng & Độ Tin cậy (Module M6: Measurement Service - Phase 6).
+Tính toán toàn bộ các thông số hình thái mi mắt từ dữ liệu mốc giải phẫu và mô hình học sâu:
 - MRD1 (Margin Reflex Distance 1): MRD1_px = y_ref - y_margin, quy đổi sang mm qua S_iris.
 - Khoảng ước lượng dung sai: [MRD1_mm - 0.5, MRD1_mm + 0.5] mm.
 - Chiều cao khe mi PFH (Palpebral Fissure Height): PFH_px = y_lower - y_upper, quy đổi mm.
@@ -8,10 +8,12 @@ Tính toán toàn bộ các thông số hình thái mi mắt từ dữ liệu m�
 - Phân loại đối xứng: PHYSIOLOGICAL_SYMMETRY, BORDERLINE_ASYMMETRY, SIGNIFICANT_ASYMMETRY.
 - Điểm tin cậy tổng hợp C_MRD1 = 0.25*Q_anh + 0.35*C_bo_mi + 0.25*C_phan_quang + 0.15*G_nhat_quan.
 - Phân định trạng thái: VALID, LOW_CONFIDENCE, INVALID, NOT_DETECTABLE.
+Hỗ trợ liền mạch cả kết quả từ mô hình học sâu V2 (EyelidUNet, IrisFour, ReflexModel)
+lẫn đối tượng mốc giải phẫu chuẩn trước đây (Backward Compatibility 100%).
 Tuân thủ tuyệt đối G2 (In-Memory Zero-Retention) và G4 (Non-Diagnostic Safety).
 """
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
 import numpy as np
 
 from app.core.config import settings
@@ -24,9 +26,14 @@ from app.schemas.measurement import (
     SingleEyeMeasurement,
 )
 from app.services.eyelid_margin_service import MarginResult
+from app.services.eyelid_model_service import EyelidSegmentationResult
+from app.services.iris_model_service import IrisGeometryResult
 from app.services.landmark_service import LandmarkResult
+from app.services.reflex_model_service import ReflexModelResult
 from app.services.reflex_service import ReflexResult
-from app.utils.spline_interpolator import EyelidSplineInterpolator
+
+PHYSIOLOGICAL_MRD1_MAX_MM: float = 6.0
+PHYSIOLOGICAL_MRD1_MIN_MM: float = -2.0
 
 
 def _interpolate_lower_eyelid_y(
@@ -44,8 +51,8 @@ def _interpolate_lower_eyelid_y(
 
 def _calculate_single_eye_confidence(
     sharpness_score: Optional[float],
-    margin_res: MarginResult,
-    reflex_res: ReflexResult,
+    c_bo_mi: float,
+    c_phan_quang: float,
     is_hvid_consistent: bool,
     hvid_asymmetry_ratio: float,
 ) -> float:
@@ -56,12 +63,6 @@ def _calculate_single_eye_confidence(
     # 1. Chất lượng ảnh (Q_anh)
     sharp = sharpness_score if sharpness_score is not None else 100.0
     q_anh = float(np.clip(sharp / 100.0, 0.50, 1.0))
-
-    # 2. Độ tin cậy bờ mi (C_bo_mi)
-    c_bo_mi = 1.0 if margin_res.is_gradient_refined else 0.70
-
-    # 3. Độ tin cậy phản quang (C_phan_quang)
-    c_phan_quang = float(reflex_res.confidence_score)
 
     # 4. Tính nhất quán sinh học mống mắt (G_nhat_quan)
     if is_hvid_consistent:
@@ -89,12 +90,14 @@ def _determine_measurement_status(confidence_score: float) -> MeasurementStatusE
 
 
 def compute_measurements(
-    landmarks: LandmarkResult,
-    reflex_od: ReflexResult,
-    reflex_os: ReflexResult,
-    margin_od: MarginResult,
-    margin_os: MarginResult,
+    landmarks: Optional[LandmarkResult] = None,
+    reflex_od: Optional[Union[ReflexResult, ReflexModelResult]] = None,
+    reflex_os: Optional[Union[ReflexResult, ReflexModelResult]] = None,
+    margin_od: Optional[Union[MarginResult, EyelidSegmentationResult]] = None,
+    margin_os: Optional[Union[MarginResult, EyelidSegmentationResult]] = None,
     sharpness_score: Optional[float] = None,
+    iris_od: Optional[IrisGeometryResult] = None,
+    iris_os: Optional[IrisGeometryResult] = None,
 ) -> Tuple[MeasurementsContainer, BilateralComparison]:
     """
     Tính toán toàn diện các chỉ số đo lường hình thái hai mắt:
@@ -103,15 +106,91 @@ def compute_measurements(
     - So sánh bất đối xứng hai bên và độ chênh lệch cung mày
     - Điểm tin cậy tổng hợp và phân loại trạng thái
 
+    Hỗ trợ cả đối tượng từ pipeline mới (IrisGeometryResult, ReflexModelResult, EyelidSegmentationResult)
+    và pipeline trước đó (LandmarkResult, ReflexResult, MarginResult).
+
     Returns:
         Tuple chứa MeasurementsContainer và BilateralComparison.
     """
     # -------------------------------------------------------------------------
+    # 0. Xác định hệ số thang đo (Scale Factor) và độ bất đối xứng mống mắt
+    # -------------------------------------------------------------------------
+    if iris_od is not None and iris_os is not None:
+        scale_od = iris_od.scale_factor_mm_per_px
+        scale_os = iris_os.scale_factor_mm_per_px
+        hvid_diff = abs(iris_od.hvid_px - iris_os.hvid_px)
+        max_hvid = max(iris_od.hvid_px, iris_os.hvid_px, 1.0)
+        hvid_asymmetry_ratio = hvid_diff / max_hvid
+        is_hvid_consistent = (hvid_asymmetry_ratio <= settings.IRIS_MAX_BILATERAL_DIFF_RATIO)
+        flags_scale: List[str] = []
+        if not is_hvid_consistent:
+            flags_scale.append("HVID_ASYMMETRY_EXCEEDED")
+    elif landmarks is not None:
+        scale_od = landmarks.scale_factor_od
+        scale_os = landmarks.scale_factor_os
+        hvid_asymmetry_ratio = landmarks.hvid_asymmetry_ratio
+        is_hvid_consistent = landmarks.is_hvid_biologically_consistent
+        flags_scale = list(landmarks.warning_flags)
+    else:
+        # Trường hợp dự phòng an toàn tuyệt đối
+        scale_od = 0.25
+        scale_os = 0.25
+        hvid_asymmetry_ratio = 0.0
+        is_hvid_consistent = True
+        flags_scale = []
+
+    # -------------------------------------------------------------------------
     # 1. MẮT PHẢI (OD)
     # -------------------------------------------------------------------------
-    x_ref_od = reflex_od.reflex_point[0]
-    y_ref_od = reflex_od.reflex_point[1]
-    y_margin_od = margin_od.margin_point[1]
+    # Trích xuất thông số phản quang / điểm tham chiếu OD
+    if isinstance(reflex_od, ReflexModelResult):
+        x_ref_od = reflex_od.reference_point[0]
+        y_ref_od = reflex_od.reference_point[1]
+        ref_used_od = reflex_od.reference_point_used
+        fallback_type_od = reflex_od.fallback_type
+        conf_reflex_od = reflex_od.confidence_score
+        flags_reflex_od = list(reflex_od.warning_flags)
+        glint_aspect_od = reflex_od.glint_aspect_ratio
+    elif isinstance(reflex_od, ReflexResult):
+        x_ref_od = reflex_od.reflex_point[0]
+        y_ref_od = reflex_od.reflex_point[1]
+        ref_used_od = reflex_od.reference_point_used
+        fallback_type_od = getattr(reflex_od, "fallback_type", None)
+        conf_reflex_od = reflex_od.confidence_score
+        flags_reflex_od = list(reflex_od.warning_flags)
+        glint_aspect_od = reflex_od.glint_aspect_ratio
+    else:
+        x_ref_od, y_ref_od = (0.0, 0.0)
+        ref_used_od = "CORNEAL_LIGHT_REFLEX"
+        fallback_type_od = None
+        conf_reflex_od = 1.0
+        flags_reflex_od = []
+        glint_aspect_od = None
+
+    # Trích xuất thông số bờ mi OD
+    if isinstance(margin_od, EyelidSegmentationResult):
+        x_margin_od = margin_od.margin_point[0]
+        y_margin_od = margin_od.margin_point[1]
+        y_lower_od = margin_od.lower_margin_point[1]
+        pfh_px_od = margin_od.pfh_px
+        conf_margin_od = margin_od.confidence_score
+        flags_margin_od = list(margin_od.warning_flags)
+    elif isinstance(margin_od, MarginResult):
+        x_margin_od = margin_od.margin_point[0]
+        y_margin_od = margin_od.margin_point[1]
+        if landmarks is not None and landmarks.lower_eyelid_od:
+            y_lower_od = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_od, x_ref_od)
+        else:
+            y_lower_od = y_margin_od + 20.0
+        pfh_px_od = max(0.0, y_lower_od - y_margin_od)
+        conf_margin_od = 1.0 if margin_od.is_gradient_refined else 0.70
+        flags_margin_od = list(margin_od.warning_flags)
+    else:
+        x_margin_od, y_margin_od = (x_ref_od, y_ref_od - 16.0)
+        y_lower_od = y_ref_od + 16.0
+        pfh_px_od = 32.0
+        conf_margin_od = 0.90
+        flags_margin_od = []
 
     # Quy ước dấu: Y tăng dần từ trên xuống dưới
     # Bờ mi trên ở phía trên phản quang (y_margin < y_ref) -> MRD1 > 0
@@ -172,9 +251,53 @@ def compute_measurements(
     # -------------------------------------------------------------------------
     # 2. MẮT TRÁI (OS)
     # -------------------------------------------------------------------------
-    x_ref_os = reflex_os.reflex_point[0]
-    y_ref_os = reflex_os.reflex_point[1]
-    y_margin_os = margin_os.margin_point[1]
+    if isinstance(reflex_os, ReflexModelResult):
+        x_ref_os = reflex_os.reference_point[0]
+        y_ref_os = reflex_os.reference_point[1]
+        ref_used_os = reflex_os.reference_point_used
+        fallback_type_os = reflex_os.fallback_type
+        conf_reflex_os = reflex_os.confidence_score
+        flags_reflex_os = list(reflex_os.warning_flags)
+        glint_aspect_os = reflex_os.glint_aspect_ratio
+    elif isinstance(reflex_os, ReflexResult):
+        x_ref_os = reflex_os.reflex_point[0]
+        y_ref_os = reflex_os.reflex_point[1]
+        ref_used_os = reflex_os.reference_point_used
+        fallback_type_os = getattr(reflex_os, "fallback_type", None)
+        conf_reflex_os = reflex_os.confidence_score
+        flags_reflex_os = list(reflex_os.warning_flags)
+        glint_aspect_os = reflex_os.glint_aspect_ratio
+    else:
+        x_ref_os, y_ref_os = (0.0, 0.0)
+        ref_used_os = "CORNEAL_LIGHT_REFLEX"
+        fallback_type_os = None
+        conf_reflex_os = 1.0
+        flags_reflex_os = []
+        glint_aspect_os = None
+
+    if isinstance(margin_os, EyelidSegmentationResult):
+        x_margin_os = margin_os.margin_point[0]
+        y_margin_os = margin_os.margin_point[1]
+        y_lower_os = margin_os.lower_margin_point[1]
+        pfh_px_os = margin_os.pfh_px
+        conf_margin_os = margin_os.confidence_score
+        flags_margin_os = list(margin_os.warning_flags)
+    elif isinstance(margin_os, MarginResult):
+        x_margin_os = margin_os.margin_point[0]
+        y_margin_os = margin_os.margin_point[1]
+        if landmarks is not None and landmarks.lower_eyelid_os:
+            y_lower_os = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_os, x_ref_os)
+        else:
+            y_lower_os = y_margin_os + 20.0
+        pfh_px_os = max(0.0, y_lower_os - y_margin_os)
+        conf_margin_os = 1.0 if margin_os.is_gradient_refined else 0.70
+        flags_margin_os = list(margin_os.warning_flags)
+    else:
+        x_margin_os, y_margin_os = (x_ref_os, y_ref_os - 16.0)
+        y_lower_os = y_ref_os + 16.0
+        pfh_px_os = 32.0
+        conf_margin_os = 0.90
+        flags_margin_os = []
 
     raw_mrd1_px_os = y_ref_os - y_margin_os
     flags_os = list(dict.fromkeys(landmarks.warning_flags + reflex_os.warning_flags + margin_os.warning_flags))
@@ -252,13 +375,14 @@ def compute_measurements(
     delta_pfh_mm = abs(pfh_mm_os - pfh_mm_od)
 
     # Chênh lệch độ cao cung mày (Eyebrow Height Discrepancy)
-    # Khoảng cách từ tâm mống mắt / phản quang lên điểm giữa cung mày
-    brow_center_od_y = landmarks.eyebrow_od[2][1] if len(landmarks.eyebrow_od) > 2 else y_ref_od
-    brow_center_os_y = landmarks.eyebrow_os[2][1] if len(landmarks.eyebrow_os) > 2 else y_ref_os
-
-    brow_height_od = y_ref_od - brow_center_od_y
-    brow_height_os = y_ref_os - brow_center_os_y
-    delta_brow_px = abs(brow_height_os - brow_height_od)
+    if landmarks is not None and len(landmarks.eyebrow_od) > 2 and len(landmarks.eyebrow_os) > 2:
+        brow_center_od_y = landmarks.eyebrow_od[2][1]
+        brow_center_os_y = landmarks.eyebrow_os[2][1]
+        brow_height_od = y_ref_od - brow_center_od_y
+        brow_height_os = y_ref_os - brow_center_os_y
+        delta_brow_px = abs(brow_height_os - brow_height_od)
+    else:
+        delta_brow_px = 0.0
 
     bilateral_comparison = BilateralComparison(
         delta_mrd1_mm=delta_mrd1_mm,

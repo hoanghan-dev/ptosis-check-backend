@@ -46,6 +46,10 @@ def test_v2_configuration_constants():
     # An toàn biên khung hình (M2)
     assert settings.OCULAR_EDGE_MARGIN_PX == 2
 
+    # Quản lý đường dẫn trọng số và thiết bị tính toán (Phase 1)
+    assert settings.WEIGHTS_DIR.exists()
+    assert settings.TORCH_DEVICE == "cpu"
+
 
 def test_single_eye_measurement_backward_compatibility():
     """Xác thực SingleEyeMeasurement hoạt động khi không truyền các trường V2 mới (tương thích ngược G5)."""

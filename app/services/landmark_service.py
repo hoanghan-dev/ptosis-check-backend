@@ -24,8 +24,15 @@ try:
         refine_landmarks=True,
         min_detection_confidence=0.5,
     )
+    _LANDMARK_FACE_MESH_CROP = mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.3,
+    )
 except Exception as e:
     _LANDMARK_FACE_MESH = None
+    _LANDMARK_FACE_MESH_CROP = None
     _LANDMARK_FACE_MESH_INIT_ERROR = str(e)
 
 from app.core.config import settings
@@ -79,16 +86,18 @@ class LandmarkResult:
     warning_flags: List[str] = field(default_factory=list)
 
 
-def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
+def detect_landmarks(image_bgr: np.ndarray, is_eye_crop: bool = False) -> LandmarkResult:
     """
     Trích xuất mốc hình học khuôn mặt và tính toán thước đo mống mắt ngang (HVID):
     - Input: Mảng ảnh BGR hợp lệ trong RAM.
+    - is_eye_crop: Cờ báo ảnh cắt vùng mắt (tự động áp dụng đệm phản chiếu nếu cần).
     - Output: LandmarkResult chứa tọa độ sub-pixel và hệ số quy đổi milimét.
     """
     if image_bgr is None or not isinstance(image_bgr, np.ndarray) or image_bgr.size == 0:
         raise ValueError("Dữ liệu ảnh đầu vào không hợp lệ hoặc rỗng.")
 
-    if _LANDMARK_FACE_MESH is None:
+    mesh_detector = _LANDMARK_FACE_MESH_CROP if is_eye_crop else _LANDMARK_FACE_MESH
+    if mesh_detector is None:
         detail = f" Chi tiết lỗi: {_LANDMARK_FACE_MESH_INIT_ERROR}" if _LANDMARK_FACE_MESH_INIT_ERROR else ""
         raise RuntimeError(f"Module MediaPipe FaceMesh chưa được khởi tạo thành công.{detail}")
 
@@ -98,7 +107,7 @@ def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
         results = _LANDMARK_FACE_MESH.process(rgb_image)
 
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0:
-        raise ValueError("Không phát hiện được khuôn mặt trong ảnh.")
+        raise ValueError("Không phát hiện được khuôn mặt hoặc vùng mắt trong ảnh.")
 
     face_landmarks = results.multi_face_landmarks[0].landmark
     if len(face_landmarks) < 478:
@@ -106,9 +115,9 @@ def detect_landmarks(image_bgr: np.ndarray) -> LandmarkResult:
             f"Khuôn mặt chỉ phát hiện được {len(face_landmarks)} mốc, thiếu mốc mống mắt (yêu cầu 478 mốc)."
         )
 
-    # Chuyển đổi toàn bộ mốc sang tọa độ pixel tuyệt đối
+    # Chuyển đổi toàn bộ mốc sang tọa độ pixel tuyệt đối (ánh xạ ngược nếu có padding)
     landmarks_px = np.array(
-        [[float(lm.x) * float(width), float(lm.y) * float(height)] for lm in face_landmarks],
+        [[float(lm.x) * float(pw) - pad_left, float(lm.y) * float(ph) - pad_top] for lm in face_landmarks],
         dtype=np.float64,
     )
 

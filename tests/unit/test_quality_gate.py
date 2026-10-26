@@ -181,8 +181,9 @@ def test_tc2_3_too_dark():
 
 def test_tc2_3_too_bright():
     """Kiểm tra từ chối ảnh cháy sáng quá mức với độ sáng xám trung bình > 220."""
-    # Tạo ảnh trắng sáng toàn phần
-    bright_img = np.full((400, 400, 3), 235, dtype=np.uint8)
+    img = get_valid_test_image()
+    # Tăng độ sáng để độ sáng xám trung bình > 220
+    bright_img = np.clip(img.astype(np.float32) + 160.0, 0, 240).astype(np.uint8)
 
     result = evaluate_quality(bright_img)
     assert not result.passed
