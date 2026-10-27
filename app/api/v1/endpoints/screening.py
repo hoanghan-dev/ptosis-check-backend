@@ -12,11 +12,13 @@ import gc
 import uuid
 import cv2
 import numpy as np
+from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app.core.config import settings
 from app.core.memory_guard import purge_image_data
 from app.utils.image_orientation import decode_and_orient_image
+from app.utils.spline_interpolator import EyelidSplineInterpolator
 from app.schemas.measurement import (
     AnnotatedOverlayContainer,
     BilateralComparison,
@@ -33,17 +35,18 @@ from app.schemas.measurement import (
 )
 from app.schemas.quality import PoseAudit, QualityRejection
 from app.schemas.triage import ScreeningTier, TriageFlags, TriageResult
+from app.services.eyelid_margin_service import extract_upper_margin
 from app.services.input_router_service import InputType, classify_input_image
 from app.services.periocular_adapter_service import process_periocular_crop
 from app.services.quality_gate_service import evaluate_periocular_quality, evaluate_quality
-from app.services.landmark_service import detect_landmarks
+from app.services.landmark_service import (
+    LANDMARK_IRIS_CENTER_OD,
+    LANDMARK_IRIS_CENTER_OS,
+    LandmarkResult,
+    detect_landmarks,
+)
 from app.services.measurement_service import compute_measurements
 from app.services.pupil_service import detect_pupil_in_iris_roi
-from app.services.quality_gate_service import evaluate_quality
-from app.services.reflex_model_service import (
-    ReflexModelResult,
-    locate_reference_point,
-)
 from app.services.reflex_service import ReflexDetectionStatus, detect_corneal_reflex
 from app.services.triage_service import evaluate_triage
 
@@ -58,7 +61,7 @@ router = APIRouter()
 )
 async def analyze_eye_image(
     file: UploadFile = File(..., description="Tệp ảnh nhị phân (JPEG, PNG, WebP)"),
-    image_type: str = Form(default="fullface", description="Loại ảnh: 'fullface' (ảnh toàn mặt) hoặc 'eye_crop' (ảnh crop cận cảnh 2 mắt)"),
+    image_type: Optional[str] = Form(default=None, description="Loại ảnh: 'fullface' (ảnh toàn mặt) hoặc 'eye_crop' (ảnh crop cận cảnh 2 mắt)"),
 ) -> MeasurementPayload:
     """
     Tiếp nhận ảnh, nạp vào RAM qua buffer nhị phân, giải mã bằng OpenCV và kiểm tra
@@ -72,6 +75,34 @@ async def analyze_eye_image(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Tệp ảnh tải lên trống hoặc không hợp lệ.",
+        )
+
+    raw_image_type = (image_type or "").strip().lower()
+    is_explicit_fullface = (raw_image_type == "fullface")
+    is_eye_crop = (raw_image_type == "eye_crop")
+
+    # Kiểm tra dung lượng tệp:
+    # Nếu chỉ định rõ 'fullface': yêu cầu từ 50KB đến 15MB.
+    # Nếu chỉ định rõ 'eye_crop': yêu cầu từ 10KB đến 15MB.
+    # Nếu không chỉ định (auto mode): không chặn cứng dung lượng tối thiểu ban đầu để hỗ trợ ảnh crop/nội suy tự động.
+    file_size = len(contents)
+    if is_explicit_fullface and file_size < settings.MIN_FILE_SIZE_FULLFACE_BYTES:
+        purge_image_data(contents)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dung lượng tệp quá nhỏ (< 50KB). Vui lòng chọn ảnh chụp có độ phân giải và chất lượng tốt hơn.",
+        )
+    if is_eye_crop and file_size < settings.MIN_FILE_SIZE_EYE_CROP_BYTES:
+        purge_image_data(contents)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dung lượng tệp quá nhỏ (< 10KB). Vui lòng chọn ảnh chụp có độ phân giải và chất lượng tốt hơn.",
+        )
+    if file_size > settings.MAX_FILE_SIZE_BYTES:
+        purge_image_data(contents)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Dung lượng tệp vượt quá giới hạn 15MB. Vui lòng tối ưu kích thước ảnh trước khi tải lên.",
         )
 
     # 2. Giải mã bằng buffer trong RAM và tự động định hướng (Module M1 / Phase B: EXIF & 4-Direction Auto-Orientation)
@@ -121,6 +152,77 @@ async def analyze_eye_image(
 
         # 4. Điều tuyến dạng ảnh đầu vào: Toàn Mặt (Full-Face) hay Cận cảnh Hai Mắt (Dual-Eye Crop)
         input_type, router_meta = classify_input_image(image_bgr)
+        landmarks = None
+        quality_gate = None
+        fallback_eyelid_od = None
+        fallback_eyelid_os = None
+
+        if input_type == InputType.UNSUPPORTED and (is_eye_crop or router_meta.get("aspect_ratio", 0) >= 1.6):
+            # Cứu nguy cho ảnh crop cận cảnh cắt sát (tight eye crop) bằng Deep Learning Pipeline
+            qg_candidate = evaluate_quality(image_bgr, image_type="eye_crop")
+            if qg_candidate.passed:
+                from app.services.eye_roi_service import extract_bilateral_eye_rois
+                from app.services.iris_model_service import detect_iris_geometry
+                from app.services.eyelid_model_service import segment_eyelid_margins
+
+                roi_res = extract_bilateral_eye_rois(image_bgr, image_type="eye_crop")
+                if roi_res.is_valid:
+                    iris_od = detect_iris_geometry(image_bgr, roi_res.od.bbox, eye_side="OD", eye_roi=roi_res.od)
+                    iris_os = detect_iris_geometry(image_bgr, roi_res.os.bbox, eye_side="OS", eye_roi=roi_res.os)
+                    if iris_od and iris_os:
+                        eyelid_od = segment_eyelid_margins(
+                            image_bgr, roi_res.od.bbox, iris_od.iris_center[0], iris_od.iris_center[1], eye_side="OD", eye_roi=roi_res.od
+                        )
+                        eyelid_os = segment_eyelid_margins(
+                            image_bgr, roi_res.os.bbox, iris_os.iris_center[0], iris_os.iris_center[1], eye_side="OS", eye_roi=roi_res.os
+                        )
+                        fallback_eyelid_od = eyelid_od
+                        fallback_eyelid_os = eyelid_os
+                        max_hvid = max(iris_od.hvid_px, iris_os.hvid_px)
+                        hvid_asym = abs(iris_od.hvid_px - iris_os.hvid_px) / max(max_hvid, 1e-6)
+                        landmarks_px = np.zeros((478, 2), dtype=np.float64)
+                        landmarks_px[LANDMARK_IRIS_CENTER_OD] = iris_od.iris_center
+                        landmarks_px[LANDMARK_IRIS_CENTER_OS] = iris_os.iris_center
+
+                        landmarks = LandmarkResult(
+                            landmarks_px=landmarks_px,
+                            iris_center_od=(float(iris_od.iris_center[0]), float(iris_od.iris_center[1])),
+                            iris_center_os=(float(iris_os.iris_center[0]), float(iris_os.iris_center[1])),
+                            limbus_horizontal_od=(
+                                (float(iris_od.iris_left[0]), float(iris_od.iris_left[1])),
+                                (float(iris_od.iris_right[0]), float(iris_od.iris_right[1])),
+                            ),
+                            limbus_horizontal_os=(
+                                (float(iris_os.iris_left[0]), float(iris_os.iris_left[1])),
+                                (float(iris_os.iris_right[0]), float(iris_os.iris_right[1])),
+                            ),
+                            hvid_od_px=round(float(iris_od.hvid_px), 2),
+                            hvid_os_px=round(float(iris_os.hvid_px), 2),
+                            scale_factor_od=round(float(iris_od.scale_factor_mm_per_px), 4),
+                            scale_factor_os=round(float(iris_os.scale_factor_mm_per_px), 4),
+                            hvid_asymmetry_ratio=round(float(hvid_asym), 4),
+                            is_hvid_biologically_consistent=(hvid_asym <= settings.IRIS_MAX_BILATERAL_DIFF_RATIO),
+                            upper_eyelid_od=eyelid_od.upper_eyelid_contour,
+                            lower_eyelid_od=eyelid_od.lower_eyelid_contour if eyelid_od.lower_eyelid_contour else [],
+                            upper_eyelid_os=eyelid_os.upper_eyelid_contour,
+                            lower_eyelid_os=eyelid_os.lower_eyelid_contour if eyelid_os.lower_eyelid_contour else [],
+                            eyebrow_od=[],
+                            eyebrow_os=[],
+                            warning_flags=["EYEBROW_NOT_AVAILABLE_IN_CROP"],
+                        )
+                        quality_gate = qg_candidate
+                        input_type = InputType.DUAL_EYE_CROP
+            if not quality_gate or not quality_gate.passed:
+                rejection = QualityRejection(
+                    error_code="QUALITY_GATE_REJECTED",
+                    rejection_reason=qg_candidate.rejection_reason or "UNSUPPORTED_INPUT_FORMAT",
+                    rejection_message_vi=qg_candidate.rejection_message_vi or "Không nhận diện được rõ cả hai mắt trong ảnh cắt. Vui lòng căn chỉnh bức ảnh thấy rõ cả mắt phải và mắt trái, nhìn thẳng trực diện.",
+                    audit_details=qg_candidate.audit_details,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=rejection.model_dump(),
+                )
 
         if input_type == InputType.UNSUPPORTED:
             rejection = QualityRejection(
@@ -135,9 +237,10 @@ async def analyze_eye_image(
             )
 
         if input_type == InputType.DUAL_EYE_CROP and settings.PERIOCULAR_PIPELINE_ENABLED:
-            # Nhánh 2: Xử lý qua Periocular Adapter & Periocular Quality Gate
-            landmarks = process_periocular_crop(image_bgr, router_meta)
-            quality_gate = evaluate_periocular_quality(image_bgr, landmarks)
+            if landmarks is None:
+                # Nhánh 2: Xử lý qua Periocular Adapter & Periocular Quality Gate
+                landmarks = process_periocular_crop(image_bgr, router_meta)
+                quality_gate = evaluate_periocular_quality(image_bgr, landmarks)
             if quality_gate.audit_details is None:
                 quality_gate.audit_details = {}
             quality_gate.audit_details["applied_rotation_deg"] = orientation_meta.get("applied_rotation_deg", 0)
@@ -180,21 +283,17 @@ async def analyze_eye_image(
             # 4. Định vị Mốc Mống mắt & Xác lập Thước đo HVID (Module M3)
             landmarks = detect_landmarks(image_bgr)
 
-        # 7. Kiểm tra chốt chặn quang học & Định vị Phản quang Giác mạc (Phase 5: Reflex Model Service)
+        # 5. Phát hiện Phản quang Giác mạc Purkinje & Cơ chế Dự phòng (Module M4)
         image_gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        r_iris_od = iris_od.hvid_px / 2.0
-        r_iris_os = iris_os.hvid_px / 2.0
-
-        # Kiểm tra vệt lóa kéo dài hoặc cụm đốm sáng qua bộ lọc phát hiện phản quang
-        reflex_check_od = detect_corneal_reflex(image_gray, iris_od.iris_center, r_iris_od)
-        reflex_check_os = detect_corneal_reflex(image_gray, iris_os.iris_center, r_iris_os)
+        r_iris_od = landmarks.hvid_od_px / 2.0
+        r_iris_os = landmarks.hvid_os_px / 2.0
+        reflex_od = detect_corneal_reflex(image_gray, landmarks.iris_center_od, r_iris_od)
+        reflex_os = detect_corneal_reflex(image_gray, landmarks.iris_center_os, r_iris_os)
 
         # Chốt chặn Cổng Chất lượng từ chối ảnh khi có cụm đốm sáng cạnh tranh (HTTP 422)
-        # Lưu ý (Phase A - A4): Vệt lóa dài (LARGE_OR_ELONGATED_GLARE) được chuyển tiếp sang chuỗi dự phòng (Fallback) thay vì từ chối cứng HTTP 422
-
         if (
-            reflex_check_od.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
-            or reflex_check_os.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
+            reflex_od.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
+            or reflex_os.status == ReflexDetectionStatus.CLUSTERED_REFLEX_CANDIDATES
         ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -205,15 +304,14 @@ async def analyze_eye_image(
                 ).model_dump(),
             )
 
-        # Định vị điểm tham chiếu chuẩn bằng mạng nơ-ron chuyên sâu kết hợp chuỗi dự phòng 3 cấp
+        # Thiết lập Chuỗi Dự phòng 3 Cấp (Three-Tier Fallback Chain)
+        # Mắt phải (OD)
+        fallback_type_od = "NONE"
+        glint_aspect_od = reflex_od.glint_aspect_ratio
         pupil_diam_od = None
-        pupil_diam_os = None
 
-        # Xử lý tương thích chỉ khi hàm detect_corneal_reflex bị mock trong kiểm thử
-        is_mocked = hasattr(detect_corneal_reflex, "mock_calls") or hasattr(detect_corneal_reflex, "assert_called")
-
-        if is_mocked and reflex_check_od.has_fallback:
-            pupil_res_od = detect_pupil_in_iris_roi(image_bgr, iris_od.iris_center, r_iris_od)
+        if reflex_od.has_fallback:
+            pupil_res_od = detect_pupil_in_iris_roi(image_bgr, landmarks.iris_center_od, r_iris_od)
             if pupil_res_od.status == "DETECTED" and pupil_res_od.pupil_point is not None:
                 reflex_od.reflex_point = pupil_res_od.pupil_point
                 reflex_od.confidence_score = settings.PUPIL_FALLBACK_CONFIDENCE
@@ -221,17 +319,6 @@ async def analyze_eye_image(
                 if "REFLEX_FALLBACK_TO_PUPIL" not in reflex_od.warning_flags: reflex_od.warning_flags.append("REFLEX_FALLBACK_TO_PUPIL")
                 fallback_type_od = "PUPIL_DETECTOR"
                 pupil_diam_od = pupil_res_od.pupil_diameter_px
-                reflex_od = ReflexModelResult(
-                    eye_side="OD",
-                    reference_point=pupil_res_od.pupil_point,
-                    reference_point_used="PUPIL_CENTER_FALLBACK",
-                    fallback_type="PUPIL_DETECTOR",
-                    confidence_score=settings.PUPIL_FALLBACK_CONFIDENCE,
-                    has_fallback=True,
-                    glint_aspect_ratio=reflex_check_od.glint_aspect_ratio,
-                    pupil_coordinates=pupil_res_od.pupil_point,
-                    warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
-                )
             else:
                 reflex_od.reflex_point = landmarks.iris_center_od
                 reflex_od.confidence_score = settings.IRIS_CENTER_FALLBACK_CONFIDENCE
@@ -244,8 +331,8 @@ async def analyze_eye_image(
         glint_aspect_os = reflex_os.glint_aspect_ratio
         pupil_diam_os = None
 
-        if is_mocked and reflex_check_os.has_fallback:
-            pupil_res_os = detect_pupil_in_iris_roi(image_bgr, iris_os.iris_center, r_iris_os)
+        if reflex_os.has_fallback:
+            pupil_res_os = detect_pupil_in_iris_roi(image_bgr, landmarks.iris_center_os, r_iris_os)
             if pupil_res_os.status == "DETECTED" and pupil_res_os.pupil_point is not None:
                 reflex_os.reflex_point = pupil_res_os.pupil_point
                 reflex_os.confidence_score = settings.PUPIL_FALLBACK_CONFIDENCE
@@ -253,17 +340,6 @@ async def analyze_eye_image(
                 if "REFLEX_FALLBACK_TO_PUPIL" not in reflex_os.warning_flags: reflex_os.warning_flags.append("REFLEX_FALLBACK_TO_PUPIL")
                 fallback_type_os = "PUPIL_DETECTOR"
                 pupil_diam_os = pupil_res_os.pupil_diameter_px
-                reflex_os = ReflexModelResult(
-                    eye_side="OS",
-                    reference_point=pupil_res_os.pupil_point,
-                    reference_point_used="PUPIL_CENTER_FALLBACK",
-                    fallback_type="PUPIL_DETECTOR",
-                    confidence_score=settings.PUPIL_FALLBACK_CONFIDENCE,
-                    has_fallback=True,
-                    glint_aspect_ratio=reflex_check_os.glint_aspect_ratio,
-                    pupil_coordinates=pupil_res_os.pupil_point,
-                    warning_flags=["REFLEX_FALLBACK_TO_PUPIL"],
-                )
             else:
                 reflex_os.reflex_point = landmarks.iris_center_os
                 reflex_os.confidence_score = settings.IRIS_CENTER_FALLBACK_CONFIDENCE
@@ -272,41 +348,52 @@ async def analyze_eye_image(
                 fallback_type_os = "IRIS_CENTER"
 
         # 6. Phân đoạn Bờ Sụn mi Trên (Module M5)
-        margin_od = extract_upper_margin(
-            landmarks_upper=landmarks.upper_eyelid_od,
-            reflex_point=reflex_od.reflex_point,
-            image_gray=image_gray,
-            r_iris=r_iris_od,
-        )
-        margin_os = extract_upper_margin(
-            landmarks_upper=landmarks.upper_eyelid_os,
-            reflex_point=reflex_os.reflex_point,
-            image_gray=image_gray,
-            r_iris=r_iris_os,
-        )
+        if fallback_eyelid_od is not None and fallback_eyelid_os is not None:
+            margin_od = fallback_eyelid_od
+            margin_os = fallback_eyelid_os
+        else:
+            margin_od = extract_upper_margin(
+                landmarks_upper=landmarks.upper_eyelid_od,
+                reflex_point=reflex_od.reflex_point,
+                image_gray=image_gray,
+                r_iris=r_iris_od,
+            )
+            margin_os = extract_upper_margin(
+                landmarks_upper=landmarks.upper_eyelid_os,
+                reflex_point=reflex_os.reflex_point,
+                image_gray=image_gray,
+                r_iris=r_iris_os,
+            )
 
-        # 10. Khối Đo lường MRD1, Độ Bất đối xứng & Độ Tin cậy (Module M6)
+        # 7. Khối Đo lường MRD1, Độ Bất đối xứng & Độ Tin cậy (Module M6)
         measurements_container, bilateral_comparison = compute_measurements(
             landmarks=landmarks,
             reflex_od=reflex_od,
             reflex_os=reflex_os,
-            margin_od=eyelid_od,
-            margin_os=eyelid_os,
+            margin_od=margin_od,
+            margin_os=margin_os,
             sharpness_score=quality_gate.sharpness_score,
-            iris_od=iris_od,
-            iris_os=iris_os,
         )
 
+        # Bổ sung các trường hình thái học V2 vào kết quả đo từng mắt
+        measurements_container.right_eye_od.fallback_type = fallback_type_od
+        measurements_container.right_eye_od.glint_aspect_ratio = glint_aspect_od
+        measurements_container.right_eye_od.pupil_diameter_px = pupil_diam_od
+
+        measurements_container.left_eye_os.fallback_type = fallback_type_os
+        measurements_container.left_eye_os.glint_aspect_ratio = glint_aspect_os
+        measurements_container.left_eye_os.pupil_diameter_px = pupil_diam_os
+
         # Ghi nhận cảnh báo cung mày nếu không có trong ảnh crop
-        if is_eye_crop and landmarks is None:
+        if is_eye_crop and (landmarks is None or not landmarks.eyebrow_od):
             if "EYEBROW_NOT_AVAILABLE_IN_CROP" not in measurements_container.right_eye_od.warning_flags:
                 measurements_container.right_eye_od.warning_flags.append("EYEBROW_NOT_AVAILABLE_IN_CROP")
             if "EYEBROW_NOT_AVAILABLE_IN_CROP" not in measurements_container.left_eye_os.warning_flags:
                 measurements_container.left_eye_os.warning_flags.append("EYEBROW_NOT_AVAILABLE_IN_CROP")
 
         # Ghi nhận cảnh báo độ lệch trục nhìn nếu phản quang lệch tâm mống mắt đáng kể
-        offset_od_mm = abs(reflex_od.reference_point[0] - iris_od.iris_center[0]) * iris_od.scale_factor_mm_per_px
-        offset_os_mm = abs(reflex_os.reference_point[0] - iris_os.iris_center[0]) * iris_os.scale_factor_mm_per_px
+        offset_od_mm = abs(reflex_od.reflex_point[0] - landmarks.iris_center_od[0]) * landmarks.scale_factor_od
+        offset_os_mm = abs(reflex_os.reflex_point[0] - landmarks.iris_center_os[0]) * landmarks.scale_factor_os
         if offset_od_mm > 1.2 or offset_os_mm > 1.2:
             if "ASYMMETRIC_GAZE_OBSERVED" not in measurements_container.right_eye_od.warning_flags:
                 measurements_container.right_eye_od.warning_flags.append("ASYMMETRIC_GAZE_OBSERVED")
@@ -333,8 +420,8 @@ async def analyze_eye_image(
         )
 
         # Unilateral Occlusion Guard: Khi có flash ở một mắt nhưng mắt kia mất phản quang và có dấu hiệu sụp hẹp khe mi rõ rệt
-        pfh_od_px = abs(landmarks.lower_eyelid_od[4][1] - margin_od.margin_point[1])
-        pfh_os_px = abs(landmarks.lower_eyelid_os[4][1] - margin_os.margin_point[1])
+        pfh_od_px = abs(landmarks.lower_eyelid_od[4][1] - margin_od.margin_point[1]) if len(landmarks.lower_eyelid_od) > 4 else abs(landmarks.iris_center_od[1] - margin_od.margin_point[1])
+        pfh_os_px = abs(landmarks.lower_eyelid_os[4][1] - margin_os.margin_point[1]) if len(landmarks.lower_eyelid_os) > 4 else abs(landmarks.iris_center_os[1] - margin_os.margin_point[1])
         pfh_od_mm = pfh_od_px * landmarks.scale_factor_od
         pfh_os_mm = pfh_os_px * landmarks.scale_factor_os
 
@@ -402,15 +489,32 @@ async def analyze_eye_image(
         session_id = str(uuid.uuid4())
         current_time = datetime.now(timezone.utc).isoformat()
 
-        # Tạo danh sách điểm bờ mi từ mô hình hoặc fallback
-        upper_pts_od = eyelid_od.upper_eyelid_contour if (eyelid_od and eyelid_od.upper_eyelid_contour) else []
-        lower_pts_od = eyelid_od.lower_eyelid_contour if (eyelid_od and eyelid_od.lower_eyelid_contour) else []
-        upper_pts_os = eyelid_os.upper_eyelid_contour if (eyelid_os and eyelid_os.upper_eyelid_contour) else []
-        lower_pts_os = eyelid_os.lower_eyelid_contour if (eyelid_os and eyelid_os.lower_eyelid_contour) else []
+        upper_pts_od = getattr(margin_od, "spline_curve_points", None) or getattr(margin_od, "upper_eyelid_contour", [])
+        lower_pts_od = (landmarks.lower_eyelid_od if landmarks and landmarks.lower_eyelid_od else None) or getattr(margin_od, "lower_eyelid_contour", None)
+        upper_pts_os = getattr(margin_os, "spline_curve_points", None) or getattr(margin_os, "upper_eyelid_contour", [])
+        lower_pts_os = (landmarks.lower_eyelid_os if landmarks and landmarks.lower_eyelid_os else None) or getattr(margin_os, "lower_eyelid_contour", None)
 
-        # Tọa độ tâm đồng tử phục vụ vẽ overlay
-        pupil_pt_od = reflex_od.pupil_coordinates or iris_od.iris_center
-        pupil_pt_os = reflex_os.pupil_coordinates or iris_os.iris_center
+        # Đảm bảo đường viền mi trên và mi dưới có đủ mật độ điểm (>= 10 điểm) cho Canvas Frontend vẽ mượt mà (G5)
+        if upper_pts_od and len(upper_pts_od) < 10:
+            try:
+                upper_pts_od = EyelidSplineInterpolator(upper_pts_od).generate_dense_curve(num_points=30)
+            except Exception:
+                pass
+        if upper_pts_os and len(upper_pts_os) < 10:
+            try:
+                upper_pts_os = EyelidSplineInterpolator(upper_pts_os).generate_dense_curve(num_points=30)
+            except Exception:
+                pass
+        if lower_pts_od and len(lower_pts_od) < 10:
+            try:
+                lower_pts_od = EyelidSplineInterpolator(lower_pts_od).generate_dense_curve(num_points=30)
+            except Exception:
+                pass
+        if lower_pts_os and len(lower_pts_os) < 10:
+            try:
+                lower_pts_os = EyelidSplineInterpolator(lower_pts_os).generate_dense_curve(num_points=30)
+            except Exception:
+                pass
 
         payload = MeasurementPayload(
             session_id=session_id,
@@ -427,12 +531,12 @@ async def analyze_eye_image(
                 method="HVID_WTW_POPULATION_AVERAGE",
                 assumed_corneal_diameter_mm=settings.ASSUMED_CORNEAL_DIAMETER_MM,
                 hvid_pixels=EyeFloatPair(
-                    right_eye=round(iris_od.hvid_px, 2),
-                    left_eye=round(iris_os.hvid_px, 2),
+                    right_eye=round(landmarks.hvid_od_px, 2),
+                    left_eye=round(landmarks.hvid_os_px, 2),
                 ),
                 scale_factor_mm_per_px=EyeFloatPair(
-                    right_eye=round(iris_od.scale_factor_mm_per_px, 4),
-                    left_eye=round(iris_os.scale_factor_mm_per_px, 4),
+                    right_eye=round(landmarks.scale_factor_od, 4),
+                    left_eye=round(landmarks.scale_factor_os, 4),
                 ),
             ),
             measurements=measurements_container,
@@ -450,8 +554,8 @@ async def analyze_eye_image(
                         reflex_od.reflex_point[1] if fallback_type_od == "PUPIL_DETECTOR" else landmarks.iris_center_od[1],
                     ],
                     iris_limbus_contour=[
-                        [iris_od.iris_left[0], iris_od.iris_left[1]],
-                        [iris_od.iris_right[0], iris_od.iris_right[1]],
+                        [landmarks.limbus_horizontal_od[0][0], landmarks.limbus_horizontal_od[0][1]],
+                        [landmarks.limbus_horizontal_od[1][0], landmarks.limbus_horizontal_od[1][1]],
                     ],
                     upper_eyelid_contour=[[pt[0], pt[1]] for pt in upper_pts_od],
                     lower_eyelid_contour=[[pt[0], pt[1]] for pt in lower_pts_od] if lower_pts_od else None,
@@ -467,8 +571,8 @@ async def analyze_eye_image(
                         reflex_os.reflex_point[1] if fallback_type_os == "PUPIL_DETECTOR" else landmarks.iris_center_os[1],
                     ],
                     iris_limbus_contour=[
-                        [iris_os.iris_left[0], iris_os.iris_left[1]],
-                        [iris_os.iris_right[0], iris_os.iris_right[1]],
+                        [landmarks.limbus_horizontal_os[0][0], landmarks.limbus_horizontal_os[0][1]],
+                        [landmarks.limbus_horizontal_os[1][0], landmarks.limbus_horizontal_os[1][1]],
                     ],
                     upper_eyelid_contour=[[pt[0], pt[1]] for pt in upper_pts_os],
                     lower_eyelid_contour=[[pt[0], pt[1]] for pt in lower_pts_os] if lower_pts_os else None,

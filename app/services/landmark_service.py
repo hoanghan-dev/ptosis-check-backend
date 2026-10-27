@@ -104,7 +104,22 @@ def detect_landmarks(image_bgr: np.ndarray, is_eye_crop: bool = False) -> Landma
     height, width = image_bgr.shape[:2]
     rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     with mediapipe_lock:
-        results = _LANDMARK_FACE_MESH.process(rgb_image)
+        results = mesh_detector.process(rgb_image)
+
+    pad_left = 0
+    pad_top = 0
+    pw = width
+    ph = height
+
+    if (not results.multi_face_landmarks or len(results.multi_face_landmarks[0].landmark) < 478) and is_eye_crop:
+        pad_top = int(height * 0.5)
+        pad_bot = int(height * 0.5)
+        pad_left = int(width * 0.2)
+        pad_right = int(width * 0.2)
+        padded = cv2.copyMakeBorder(image_bgr, pad_top, pad_bot, pad_left, pad_right, cv2.BORDER_REFLECT)
+        ph, pw = padded.shape[:2]
+        with mediapipe_lock:
+            results = mesh_detector.process(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB))
 
     if not results.multi_face_landmarks or len(results.multi_face_landmarks) == 0:
         raise ValueError("Không phát hiện được khuôn mặt hoặc vùng mắt trong ảnh.")

@@ -113,6 +113,10 @@ class Settings(BaseSettings):
     PERIOCULAR_MIN_SCALE_FACTOR: float = 0.015
     PERIOCULAR_MAX_SCALE_FACTOR: float = 0.60
 
+    # Quản lý đường dẫn trọng số mô hình học sâu và thiết bị tính toán (Phase 1)
+    WEIGHTS_DIR: Path = Path(__file__).resolve().parent.parent / "models" / "weights"
+    TORCH_DEVICE: str = "cpu"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

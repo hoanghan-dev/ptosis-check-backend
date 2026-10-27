@@ -51,15 +51,22 @@ def _interpolate_lower_eyelid_y(
 
 def _calculate_single_eye_confidence(
     sharpness_score: Optional[float],
-    c_bo_mi: float,
-    c_phan_quang: float,
-    is_hvid_consistent: bool,
-    hvid_asymmetry_ratio: float,
+    c_bo_mi: float = 1.0,
+    c_phan_quang: float = 1.0,
+    is_hvid_consistent: bool = True,
+    hvid_asymmetry_ratio: float = 0.0,
+    *,
+    margin_res: Any = None,
+    reflex_res: Any = None,
 ) -> float:
     """
     Tính điểm tin cậy tổng hợp:
     C_MRD1 = 0.25*Q_anh + 0.35*C_bo_mi + 0.25*C_phan_quang + 0.15*G_nhat_quan
     """
+    if margin_res is not None:
+        c_bo_mi = getattr(margin_res, "confidence_score", 1.0 if getattr(margin_res, "is_gradient_refined", False) else 0.70)
+    if reflex_res is not None:
+        c_phan_quang = getattr(reflex_res, "confidence_score", 1.0)
     # 1. Chất lượng ảnh (Q_anh)
     sharp = sharpness_score if sharpness_score is not None else 100.0
     q_anh = float(np.clip(sharp / 100.0, 0.50, 1.0))
@@ -197,12 +204,13 @@ def compute_measurements(
     raw_mrd1_px_od = y_ref_od - y_margin_od
     tol = settings.NOMINAL_TOLERANCE_MM
 
-    flags_od = list(dict.fromkeys(landmarks.warning_flags + reflex_od.warning_flags + margin_od.warning_flags))
+    flags_od = list(dict.fromkeys((landmarks.warning_flags if landmarks else []) + reflex_od.warning_flags + margin_od.warning_flags))
 
     # Chiều cao khe mi PFH
-    y_lower_od = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_od, x_ref_od)
-    pfh_px_od = max(0.0, y_lower_od - y_margin_od)
-    pfh_mm_od = pfh_px_od * landmarks.scale_factor_od
+    if landmarks is not None and landmarks.lower_eyelid_od:
+        y_lower_od = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_od, x_ref_od)
+        pfh_px_od = max(0.0, y_lower_od - y_margin_od)
+    pfh_mm_od = pfh_px_od * scale_od
 
     if raw_mrd1_px_od < 0:
         # Chốt chặn dấu MRD1 âm (Phase A - A2)
@@ -217,21 +225,42 @@ def compute_measurements(
             flags_od.append("ANATOMICAL_NEGATIVE_SUSPECTED")
     else:
         mrd1_px_od = round(raw_mrd1_px_od, 2)
-        mrd1_mm_od = round(raw_mrd1_px_od * landmarks.scale_factor_od, 2)
+        mrd1_mm_od = round(raw_mrd1_px_od * scale_od, 2)
         range_od = f"{mrd1_mm_od - tol:.1f} - {mrd1_mm_od + tol:.1f} mm"
 
         conf_od = _calculate_single_eye_confidence(
             sharpness_score=sharpness_score,
+            c_bo_mi=conf_margin_od,
+            c_phan_quang=conf_reflex_od,
+            is_hvid_consistent=is_hvid_consistent,
+            hvid_asymmetry_ratio=hvid_asymmetry_ratio,
             margin_res=margin_od,
             reflex_res=reflex_od,
-            is_hvid_consistent=landmarks.is_hvid_biologically_consistent,
-            hvid_asymmetry_ratio=landmarks.hvid_asymmetry_ratio,
         )
         status_od = _determine_measurement_status(conf_od)
         if status_od == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_od:
             flags_od.append("LOW_MEASUREMENT_CONFIDENCE")
         ref_coords_od = PointCoordinates(x=x_ref_od, y=y_ref_od)
         reflex_vis_od = getattr(reflex_od, "reflex_visibility", ReflexVisibilityEnum.VISIBLE)
+
+    # Chốt chặn kiểm tra ngưỡng sinh lý lâm sàng và hình thái học
+    PHYSIOLOGICAL_MRD1_MAX_MM = 6.0
+    PHYSIOLOGICAL_MRD1_MIN_MM = 0.0
+
+    if mrd1_mm_od is not None and (mrd1_mm_od > PHYSIOLOGICAL_MRD1_MAX_MM or mrd1_mm_od < PHYSIOLOGICAL_MRD1_MIN_MM):
+        if "PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1" not in flags_od:
+            flags_od.append("PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1")
+        conf_od = min(conf_od, 0.49)
+        status_od = MeasurementStatusEnum.LOW_CONFIDENCE
+
+    if y_ref_od > y_lower_od:
+        if "REFLEX_BELOW_LOWER_MARGIN" not in flags_od:
+            flags_od.append("REFLEX_BELOW_LOWER_MARGIN")
+        conf_od = min(conf_od, 0.40)
+        status_od = MeasurementStatusEnum.LOW_CONFIDENCE
+
+    if status_od == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_od:
+        flags_od.append("LOW_MEASUREMENT_CONFIDENCE")
 
     single_od = SingleEyeMeasurement(
         mrd1_px=mrd1_px_od,
@@ -300,11 +329,12 @@ def compute_measurements(
         flags_margin_os = []
 
     raw_mrd1_px_os = y_ref_os - y_margin_os
-    flags_os = list(dict.fromkeys(landmarks.warning_flags + reflex_os.warning_flags + margin_os.warning_flags))
+    flags_os = list(dict.fromkeys((landmarks.warning_flags if landmarks else []) + reflex_os.warning_flags + margin_os.warning_flags))
 
-    y_lower_os = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_os, x_ref_os)
-    pfh_px_os = max(0.0, y_lower_os - y_margin_os)
-    pfh_mm_os = pfh_px_os * landmarks.scale_factor_os
+    if landmarks is not None and landmarks.lower_eyelid_os:
+        y_lower_os = _interpolate_lower_eyelid_y(landmarks.lower_eyelid_os, x_ref_os)
+        pfh_px_os = max(0.0, y_lower_os - y_margin_os)
+    pfh_mm_os = pfh_px_os * scale_os
 
     if raw_mrd1_px_os < 0:
         # Chốt chặn dấu MRD1 âm (Phase A - A2)
@@ -319,21 +349,38 @@ def compute_measurements(
             flags_os.append("ANATOMICAL_NEGATIVE_SUSPECTED")
     else:
         mrd1_px_os = round(raw_mrd1_px_os, 2)
-        mrd1_mm_os = round(raw_mrd1_px_os * landmarks.scale_factor_os, 2)
+        mrd1_mm_os = round(raw_mrd1_px_os * scale_os, 2)
         range_os = f"{mrd1_mm_os - tol:.1f} - {mrd1_mm_os + tol:.1f} mm"
 
         conf_os = _calculate_single_eye_confidence(
             sharpness_score=sharpness_score,
+            c_bo_mi=conf_margin_os,
+            c_phan_quang=conf_reflex_os,
+            is_hvid_consistent=is_hvid_consistent,
+            hvid_asymmetry_ratio=hvid_asymmetry_ratio,
             margin_res=margin_os,
             reflex_res=reflex_os,
-            is_hvid_consistent=landmarks.is_hvid_biologically_consistent,
-            hvid_asymmetry_ratio=landmarks.hvid_asymmetry_ratio,
         )
         status_os = _determine_measurement_status(conf_os)
         if status_os == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_os:
             flags_os.append("LOW_MEASUREMENT_CONFIDENCE")
         ref_coords_os = PointCoordinates(x=x_ref_os, y=y_ref_os)
         reflex_vis_os = getattr(reflex_os, "reflex_visibility", ReflexVisibilityEnum.VISIBLE)
+
+    if mrd1_mm_os is not None and (mrd1_mm_os > PHYSIOLOGICAL_MRD1_MAX_MM or mrd1_mm_os < PHYSIOLOGICAL_MRD1_MIN_MM):
+        if "PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1" not in flags_os:
+            flags_os.append("PHYSIOLOGICAL_LIMIT_EXCEEDED_MRD1")
+        conf_os = min(conf_os, 0.49)
+        status_os = MeasurementStatusEnum.LOW_CONFIDENCE
+
+    if y_ref_os > y_lower_os:
+        if "REFLEX_BELOW_LOWER_MARGIN" not in flags_os:
+            flags_os.append("REFLEX_BELOW_LOWER_MARGIN")
+        conf_os = min(conf_os, 0.40)
+        status_os = MeasurementStatusEnum.LOW_CONFIDENCE
+
+    if status_os == MeasurementStatusEnum.LOW_CONFIDENCE and "LOW_MEASUREMENT_CONFIDENCE" not in flags_os:
+        flags_os.append("LOW_MEASUREMENT_CONFIDENCE")
 
     single_os = SingleEyeMeasurement(
         mrd1_px=mrd1_px_os,

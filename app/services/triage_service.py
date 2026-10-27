@@ -159,8 +159,13 @@ def evaluate_triage(
             "và đánh giá chuyên sâu chức năng mở mi."
         )
 
+        is_bilateral_severe = bool(
+            (od_val is not None and os_val is not None and od_val <= 0.0 and os_val <= 0.0)
+            or (is_lid_occluded_od and is_lid_occluded_os)
+        )
+
         flags = TriageFlags(
-            is_bilateral_severe_triggered=False,
+            is_bilateral_severe_triggered=is_bilateral_severe,
             is_brow_compensation_detected=is_brow_compensation,
             is_pupil_fallback_used=is_pupil_fallback_used,
         )
@@ -170,7 +175,7 @@ def evaluate_triage(
             description_vi=desc,
             recommendation_vi=recommendation,
             safety_disclaimer_vi=SAFETY_DISCLAIMER_VI,
-            is_bilateral_severe_triggered=False,
+            is_bilateral_severe_triggered=is_bilateral_severe,
             flags=flags,
         )
 
