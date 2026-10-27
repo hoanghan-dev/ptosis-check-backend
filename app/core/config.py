@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "https://ptosis-check.remicare.id.vn",
+        "https://remicare.id.vn",
     ]
 
     # Ngưỡng phân tầng sàng lọc mi mắt (Đông Á / Dân số học - Asymmetry-First)
